@@ -213,7 +213,7 @@ def run_with_lease(job_id, name, stop):
             last = time.monotonic()
             try:
                 with SessionLocal() as db:
-                    misses = 0 if heartbeat(db, name, job_id) else MAX_MISSES
+                    misses = 0 if heartbeat(db, name, job_id, engine_ok=engine_ok()) else MAX_MISSES
             except Exception:
                 misses += 1
                 log.exception("heartbeat failed")
@@ -227,7 +227,7 @@ def run_with_lease(job_id, name, stop):
             last = time.monotonic()
             try:
                 with SessionLocal() as db:
-                    heartbeat(db, name)
+                    heartbeat(db, name, engine_ok=engine_ok())
             except Exception:
                 log.exception("heartbeat failed")
 

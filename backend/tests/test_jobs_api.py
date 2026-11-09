@@ -196,3 +196,12 @@ def test_wordlist_over_cap_and_credentials(world):
     assert r.status_code == 422 and r.json()["detail"]["fields"]["wordlists"] == (
         "This selection needs about 6000 requests; the limit for this profile is 5000.")
     assert c.post("/api/jobs", json=body(a, profile="pre", credential_ids=["C-9999"])).status_code == 422
+
+
+def test_fresh_worker_with_engine_down_is_unavailable(world):
+    c, a, aid, uid = world
+    workers(1, engine_ok=False)  # heartbeating, but the engine probe failed
+    assert [p["available"] for p in c.get("/api/catalog").json()["profiles"]] == [True, False, False]
+    assert c.post("/api/jobs", json=body(a, profile="pre")).status_code == 422
+    r = c.post("/api/jobs", json=body(a, profile=None, modules=["reach", "dast"]))
+    assert r.status_code == 422 and "modules" in r.json()["detail"]["fields"]

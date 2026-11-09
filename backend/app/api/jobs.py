@@ -87,7 +87,7 @@ def _check_extras(db, body: JobIn, a: Assessment, cfg: SchedulerConfig):
             raise HTTPException(422, {"fields": {"wordlists": "Wordlists need the Pre-Assessment or Deep Scan profile."}})
         if body.profile != "deep" and any(w.category == "fuzzing" for w in lists.values()):
             raise HTTPException(422, {"fields": {"wordlists": "Fuzzing wordlists need the Deep Scan profile."}})
-        n, cap = wl.estimate(body.wordlists), cfg.profile_limits[body.profile]["request_cap"]
+        n, cap = wl.estimate(db, body.wordlists), cfg.profile_limits[body.profile]["request_cap"]
         if n > cap:
             raise HTTPException(422, {"fields": {"wordlists": f"This selection needs about {n} requests; "
                                                               f"the limit for this profile is {cap}."}})
@@ -115,8 +115,8 @@ def submit(body: JobIn, user=Depends(sec.current_user), db=Depends(get_db)):
         return shape(db, prior)
     if a.status != "active":
         raise HTTPException(409, "This assessment is not ready to scan. Validate the target and wait for approval first.")
-    if body.profile in ("pre", "deep") and body.modules is None and not admission.engine_healthy(db):
-        raise HTTPException(422, {"fields": {"profile": "The scanning engine is not available right now. Try again shortly."}})
+    if admission.uses_engine(modules) and not admission.engine_healthy(db):
+        raise HTTPException(422, {"fields": {"modules" if body.modules else "profile": "The scanning engine is not available right now. Try again shortly."}})
     cfg = db.scalar(select(SchedulerConfig).where(SchedulerConfig.id == 1).with_for_update()
                     .execution_options(populate_existing=True))  # serialises quota and cap checks
     if cfg.emergency or cfg.paused:

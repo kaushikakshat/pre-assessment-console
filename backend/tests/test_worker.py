@@ -179,4 +179,18 @@ def test_wordlist_seed_keeps_admin_flag(tmp_path):
     with engine.connect() as c:
         rows = c.execute(text("SELECT key, category, lines, enabled FROM wordlists ORDER BY key")).all()
     assert rows == [("Discovery/Web/a.txt", "discovery", 2, True), ("Fuzzing/f.txt", "fuzzing", 1, False)]
-    assert wordlists.estimate(["Discovery/Web/a.txt", "Fuzzing/f.txt"], forms=10) == 12
+    with SessionLocal() as db:
+        assert wordlists.estimate(db, ["Discovery/Web/a.txt", "Fuzzing/f.txt"], forms=10) == 12
+        assert wordlists.seed(db, tmp_path) == 0  # already seeded: skipped
+
+
+def test_lease_heartbeat_updates_engine_ok(monkeypatch):
+    from sqlalchemy import text
+    from test_scheduler import workers
+    (name,) = workers(1, engine_ok=True)
+    monkeypatch.setattr(wm, "HEARTBEAT_SECONDS", 0.05)
+    monkeypatch.setattr(wm, "engine_ok", lambda: False)
+    monkeypatch.setattr(wm, "run_job", lambda job_id, n, halt, *a: time.sleep(0.4))
+    wm.run_with_lease(None, name, threading.Event())  # job_id None: only the worker row is touched
+    with engine.connect() as c:
+        assert c.execute(text("SELECT engine_ok FROM workers WHERE name=:n"), {"n": name}).scalar() is False
