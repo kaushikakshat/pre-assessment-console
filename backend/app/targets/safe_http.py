@@ -1,6 +1,7 @@
 """The only HTTP client scan code may use. Resolution + guard + connect happen in one place (the network
 backend), so the address that was checked is the address that is connected to (no DNS-rebinding gap).
 httpcore still sees the hostname, so Host header, SNI and certificate verification use it."""
+import http.cookiejar
 import ipaddress
 import socket
 import time
@@ -55,11 +56,11 @@ class _GuardedBackend(httpcore.SyncBackend):
 
 
 class _Transport(httpx.HTTPTransport):
-    def __init__(self, backend):
+    def __init__(self, backend, verify=True):
         super().__init__()
         self._pool.close()
         # keepalive off: every request re-resolves and re-guards
-        self._pool = httpcore.ConnectionPool(ssl_context=httpx.create_ssl_context(), max_keepalive_connections=0,
+        self._pool = httpcore.ConnectionPool(ssl_context=httpx.create_ssl_context(verify=verify), max_keepalive_connections=0,
                                              network_backend=backend)
 
 
@@ -77,20 +78,23 @@ class Response:
 
 class SafeClient:
     def __init__(self, scope, internal_hosts=(), *, max_requests=MAX_REQUESTS,
-                 resolver=socket.getaddrinfo, guard=default_guard):
+                 resolver=socket.getaddrinfo, guard=default_guard, verify=True):
         # resolver/guard are injection points for tests only; nothing in env or requests reaches them.
         self.scope = {ipguard.normalize_host(h) for h in scope}
         self.max_requests, self.count = max_requests, 0
         items = internal_hosts.items() if isinstance(internal_hosts, Mapping) else ((h, None) for h in internal_hosts)
         backend = _GuardedBackend({ipguard.normalize_host(h): n for h, n in items}, resolver, guard)
-        self._client = httpx.Client(transport=_Transport(backend), follow_redirects=False, trust_env=False,
+        self._client = httpx.Client(transport=_Transport(backend, verify), follow_redirects=False, trust_env=False,
                                     timeout=httpx.Timeout(TIMEOUT))
+        # No cookie jar: callers send Cookie headers explicitly, so one account's session never reaches another request.
+        self._client.cookies.jar.set_policy(http.cookiejar.DefaultCookiePolicy(allowed_domains=[]))
         # Fail closed if an upstream change stops our guarded pool from being the one in use.
         t = self._client._transport
         if not (isinstance(t, _Transport) and t._pool._network_backend is backend and not self._client._mounts):
             raise RuntimeError("SafeClient transport is not the guarded transport")
 
-    def request(self, method: str, url: str, headers: dict | None = None, deadline: float | None = None) -> Response:
+    def request(self, method: str, url: str, headers: dict | None = None, deadline: float | None = None,
+                data: bytes | None = None) -> Response:
         """deadline: absolute time.monotonic() value shared across a multi-request operation."""
         u = httpx.URL(url)
         if u.scheme not in ("http", "https") or u.host.lower() not in self.scope:
@@ -102,7 +106,7 @@ class SafeClient:
         if end - time.monotonic() <= 0:
             raise TimeoutError("Time budget exhausted")
         body, truncated = bytearray(), False
-        with self._client.stream(method, u, headers={"Accept-Encoding": "identity", **(headers or {})},
+        with self._client.stream(method, u, content=data, headers={"Accept-Encoding": "identity", **(headers or {})},
                                  timeout=httpx.Timeout(end - time.monotonic())) as r:
             for chunk in r.iter_raw():  # raw: we decode ourselves with a hard output cap
                 body += chunk
@@ -110,16 +114,16 @@ class SafeClient:
                     truncated = True
                     del body[MAX_BYTES:]
                     break
-            data = bytes(body)
+            out = bytes(body)
             if r.headers.get("content-encoding", "identity").lower() in ("gzip", "x-gzip", "deflate"):
                 try:
                     d = zlib.decompressobj(47)
-                    data = d.decompress(data, MAX_BYTES + 1)
-                    if len(data) > MAX_BYTES or d.unconsumed_tail:
-                        data, truncated = data[:MAX_BYTES], True
+                    out = d.decompress(out, MAX_BYTES + 1)
+                    if len(out) > MAX_BYTES or d.unconsumed_tail:
+                        out, truncated = out[:MAX_BYTES], True
                 except zlib.error:
                     pass  # leave undecodable bodies raw
-            return Response(r.status_code, r.headers, data, truncated)
+            return Response(r.status_code, r.headers, out, truncated)
 
     def get(self, url, **kw):
         return self.request("GET", url, **kw)

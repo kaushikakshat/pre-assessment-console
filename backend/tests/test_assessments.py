@@ -90,7 +90,10 @@ def test_catalog(users):
     c = users[0].get("/api/catalog").json()
     assert [(p["key"], p["available"]) for p in c["profiles"]] == [("quick", True), ("pre", False), ("deep", False)]
     assert c["profiles"][0]["modules"] == ["reach", "ports", "tls", "headers", "exposed", "finger"]
-    assert {m["key"] for m in c["modules"] if m["available"]} == set(c["profiles"][0]["modules"])
+    # engine down: engine modules stay unavailable, the rest of Pre/Deep is on
+    assert {m["key"] for m in c["modules"] if m["available"]} == set(c["profiles"][2]["modules"]) - {"crawl", "dast", "api"}
+    assert c["profiles"][2]["modules"][6:8] == ["auth", "crawl"] and c["profiles"][2]["modules"][-2:] == ["access", "cval"]
+    assert c["limits"]["deep"]["budget_min"] == 180 and c["advisory_as_of"] and isinstance(c["wordlists"], list)
     assert len(c["modules"]) == 14
 
 
@@ -145,3 +148,18 @@ def test_edit_or_delete_during_validation(users, monkeypatch):
     fake_net(monkeypatch, table)
     aid = o1.post("/api/assessments", json=BODY).json()["id"]
     assert o1.post(f"/api/assessments/{aid}/validate").status_code == 200
+
+
+def test_allow_untrusted_cert_owner_only_and_audited(users):
+    o1, o2, adm = users
+    a = o1.post("/api/assessments", json=BODY).json()
+    assert a["allow_untrusted_cert"] is False
+    assert o1.patch(f"/api/assessments/{a['id']}", json={**BODY, "allow_untrusted_cert": True}).json()["allow_untrusted_cert"] is True
+    assert o1.patch(f"/api/assessments/{a['id']}", json=BODY).json()["allow_untrusted_cert"] is True  # omitted keeps it
+    assert o1.patch(f"/api/assessments/{a['id']}", json={**BODY, "allow_untrusted_cert": False}).json()["allow_untrusted_cert"] is False
+    assert o2.patch(f"/api/assessments/{a['id']}", json={**BODY, "allow_untrusted_cert": True}).status_code == 404
+    assert adm.patch(f"/api/assessments/{a['id']}", json={**BODY, "allow_untrusted_cert": True}).status_code == 404
+    with SessionLocal() as db:
+        details = list(db.scalars(select(AuditEvent.detail).where(AuditEvent.object == a["id"])))
+    assert "allow untrusted certificate: on" in details and "allow untrusted certificate: off" in details
+

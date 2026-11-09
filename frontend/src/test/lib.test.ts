@@ -35,7 +35,7 @@ describe('status vocabularies (§5)', () => {
   const keys = (o: object) => Object.keys(o).sort();
   it('cover every API enum value', () => {
     expect(keys(VOCAB.job)).toEqual([...JOB_STATES].sort());
-    expect(keys(VOCAB.module)).toEqual([...MODULE_STATES].sort());
+    expect(keys(VOCAB.module).filter((k) => k !== 'available')).toEqual([...MODULE_STATES].sort());
     expect(keys(VOCAB.finding)).toEqual([...FINDING_STATES].sort());
     expect(keys(VOCAB.validation)).toEqual([...VALIDATION_OUTCOMES].sort());
     expect(keys(VOCAB.check)).toEqual([...CHECK_RESULTS].sort());

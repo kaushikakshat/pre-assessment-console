@@ -144,3 +144,64 @@ def test_finding_transitions_reasons_audit_and_access(world):
     assert sum(e["area"] == "finding" for e in ev) >= 6
     lst = c.get(f"/api/assessments/{a}/findings").json()
     assert [x["id"] for x in lst] == [f] and lst[0]["assessment_id"] == a and lst[0]["job_id"].startswith("JOB-")
+
+
+def _wl(*rows):
+    with engine.begin() as c:
+        c.execute(text("DELETE FROM wordlists"))
+        for key, cat, lines, en in rows:
+            c.execute(text("INSERT INTO wordlists(key, category, label, lines, enabled) VALUES (:k, :c, :k, :l, :e)"),
+                      {"k": key, "c": cat, "l": lines, "e": en})
+
+
+def test_engine_down_marks_profiles_unavailable(world):
+    c, a, aid, uid = world
+    assert [p["available"] for p in c.get("/api/catalog").json()["profiles"]] == [True, False, False]
+    r = c.post("/api/jobs", json=body(a, profile="pre"))
+    assert r.status_code == 422 and "profile" in r.json()["detail"]["fields"]
+    workers(1, engine_ok=True)
+    cat = c.get("/api/catalog").json()
+    assert [p["available"] for p in cat["profiles"]] == [True, True, True]
+    assert all(m["available"] for m in cat["modules"])
+    r = c.post("/api/jobs", json=body(a, profile="deep"))
+    assert r.status_code == 202 and [m["key"] for m in r.json()["modules"]][6:8] == ["auth", "crawl"]
+
+
+def test_fuzz_wordlist_requires_deep(world):
+    c, a, aid, uid = world
+    _wl(("Fuzzing/xss.txt", "fuzzing", 5, True), ("Discovery/common.txt", "discovery", 50, True))
+    workers(1, engine_ok=True)
+    r = c.post("/api/jobs", json=body(a, profile="pre", wordlists=["Fuzzing/xss.txt"]))
+    assert r.status_code == 422 and "Deep" in r.json()["detail"]["fields"]["wordlists"]
+    assert c.post("/api/jobs", json=body(a, profile="pre", wordlists=["Discovery/common.txt"], idempotency_key="k2")).status_code == 202
+    r = c.post("/api/jobs", json=body(a, profile="deep", wordlists=["Fuzzing/xss.txt"], idempotency_key="k3"))
+    assert r.status_code == 202, r.text
+    with SessionLocal() as db:
+        assert db.query(Job).filter_by(display_id=r.json()["id"]).one().wordlists == ["Fuzzing/xss.txt"]
+
+
+def test_wordlist_disabled_422(world):
+    c, a, aid, uid = world
+    _wl(("Discovery/off.txt", "discovery", 5, False))
+    workers(1, engine_ok=True)
+    for names in (["Discovery/off.txt"], ["nope"]):
+        assert c.post("/api/jobs", json=body(a, profile="pre", wordlists=names)).status_code == 422
+
+
+def test_wordlist_over_cap_and_credentials(world):
+    c, a, aid, uid = world
+    _wl(("Discovery/big.txt", "discovery", 6000, True))
+    workers(1, engine_ok=True)
+    r = c.post("/api/jobs", json=body(a, profile="pre", wordlists=["Discovery/big.txt"]))
+    assert r.status_code == 422 and r.json()["detail"]["fields"]["wordlists"] == (
+        "This selection needs about 6000 requests; the limit for this profile is 5000.")
+    assert c.post("/api/jobs", json=body(a, profile="pre", credential_ids=["C-9999"])).status_code == 422
+
+
+def test_fresh_worker_with_engine_down_is_unavailable(world):
+    c, a, aid, uid = world
+    workers(1, engine_ok=False)  # heartbeating, but the engine probe failed
+    assert [p["available"] for p in c.get("/api/catalog").json()["profiles"]] == [True, False, False]
+    assert c.post("/api/jobs", json=body(a, profile="pre")).status_code == 422
+    r = c.post("/api/jobs", json=body(a, profile=None, modules=["reach", "dast"]))
+    assert r.status_code == 422 and "modules" in r.json()["detail"]["fields"]

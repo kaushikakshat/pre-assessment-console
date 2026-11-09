@@ -88,7 +88,7 @@ def test_transport_integrity_assertion(monkeypatch):
     import httpcore
     from app.targets import safe_http
     monkeypatch.setattr(safe_http._Transport, "__init__",
-                        lambda self, backend: httpx.HTTPTransport.__init__(self))  # unguarded pool
+                        lambda self, backend, verify=True: httpx.HTTPTransport.__init__(self))  # unguarded pool
     with pytest.raises(RuntimeError):
         SafeClient({"app.test"})
 

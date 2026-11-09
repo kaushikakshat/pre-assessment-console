@@ -138,7 +138,7 @@ def _check_addrs(addrs, internal: bool):
 
 
 def validate_target(target, env, ports_field, policy, resolver=socket.getaddrinfo, fetch_redirect=None,
-                    hosts="", app_env="prod", budget=15) -> dict:
+                    hosts="", app_env="prod", budget=15, verify=True) -> dict:
     """policy: {'version', 'permitted_ports', 'no_match', 'rules'}. fetch_redirect(url) -> (status, location|None);
     the default uses SafeClient.
     budget: wall-clock seconds for all redirect hops combined. Unknown APP_ENV is treated as non-dev."""
@@ -194,7 +194,7 @@ def validate_target(target, env, ports_field, policy, resolver=socket.getaddrinf
         return "warn", (f"Approval required by {ref}." if r else "No rule matches this target. Approval is required.")
 
     def default_fetch(u):
-        with SafeClient(scope | {c["p"].host}, c["internal"], resolver=resolver) as cl:
+        with SafeClient(scope | {c["p"].host}, c["internal"], resolver=resolver, verify=verify) as cl:
             r = cl.get(u, deadline=deadline)
             return r.status_code, r.headers.get("location")
 

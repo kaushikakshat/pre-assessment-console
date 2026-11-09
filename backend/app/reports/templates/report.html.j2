@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>{{ m.title.report_id }}</title>
+<style>
+@page { size: A4 portrait; margin: 22mm 16mm 24mm;
+  @top-left { content: "{{ m.title.report_id|cs }} · v{{ m.title.version }} · {{ m.title.type|cs }} · {{ m.title.assessment|cs }}"; font: 8pt "IBM Plex Sans"; color: #555; }
+  @bottom-left { content: "Pre-assessment results, not a penetration test or security clearance."; font: 7.5pt "IBM Plex Sans"; color: #555; }
+  @bottom-right { content: "Page " counter(page) " of " counter(pages); font: 8pt "IBM Plex Sans"; color: #555; } }
+body { font: 9.5pt/1.45 "IBM Plex Sans", sans-serif; color: #1b1f23; }
+.mono, pre, code { font-family: "IBM Plex Mono", monospace; }
+.band { display: flex; justify-content: space-between; border-bottom: 1px solid #ccc; padding-bottom: 4pt; font-size: 9pt; }
+h1 { font-size: 26px; margin: 14pt 0 2pt; } h2 { font-size: 13pt; margin: 16pt 0 6pt; } h3 { font-size: 11pt; margin: 0 0 4pt; }
+.meta { color: #555; margin-bottom: 10pt; }
+.watermark { border: 2px solid #b45309; color: #b45309; padding: 8pt 10pt; font-weight: 600; margin: 8pt 0; }
+table { width: 100%; border-collapse: collapse; } th, td { text-align: left; vertical-align: top; padding: 4pt 6pt; border-bottom: 1px solid #ddd; }
+th { font-size: 8.5pt; color: #555; } tr { break-inside: avoid; } td.n { text-align: right; width: 40pt; }
+.pill { display: inline-block; padding: 0 6pt; border-radius: 8pt; font-size: 8pt; font-weight: 600; background: #e5e7eb; }
+.sev-critical { background: #b91c1c; color: #fff; } .sev-high { background: #fde2e2; color: #991b1b; }
+.sev-medium { background: #fef3c7; color: #92400e; } .sev-low { background: #dbeafe; color: #1e40af; } .sev-info { background: #e5e7eb; }
+.st-ok { background: #dcfce7; color: #166534; } .st-warn { background: #fef3c7; color: #92400e; } .st-bad { background: #fde2e2; color: #991b1b; }
+.finding { break-inside: avoid-page; border-top: 2px solid #ccc; padding-top: 8pt; margin-top: 12pt; }
+dl { display: grid; grid-template-columns: 90pt 1fr; gap: 2pt 8pt; margin: 4pt 0; } dt { color: #555; } dd { margin: 0; word-break: break-word; }
+pre { background: #f3f4f6; border: 1px solid #ddd; padding: 6pt; white-space: pre-wrap; word-break: break-all; font-size: 8pt; }
+</style></head><body>
+<div class="band"><b>{{ m.header.product }}</b><span class="mono">{{ m.header.classification }}</span></div>
+<h1>{{ m.title.assessment }}</h1>
+<div class="meta">{{ m.title.type }} · {{ m.title.report_id }} · v{{ m.title.version }} · {{ m.title.generated_at }} · {{ m.title.by }}</div>
+<div class="watermark">{{ m.watermark }}</div>
+
+<h2>Scope</h2>
+<dl>{% for k, v in [("Target", m.scope.target), ("In scope", m.scope.in_scope), ("Exclusions", m.scope.exclusions),
+  ("Environment", m.scope.environment), ("Scan", m.scope.scan), ("Run time", m.scope.run_time),
+  ("Policy", m.scope.policy), ("Tools", m.scope.tools), ("Hosts with findings", m.scope.hosts_with_findings)] %}
+<dt>{{ k }}</dt><dd>{{ v }}</dd>{% endfor %}</dl>
+
+<h2>Result categories</h2>
+<table><tr><th>Category</th><th class="n">Count</th></tr>
+{% for c in m.categories %}<tr><td>{{ c.label }}</td><td class="n">{{ c.count }}</td></tr>{% endfor %}</table>
+
+<h2>Modules</h2>
+<table><tr><th>Module</th><th>Outcome</th><th>Note</th></tr>
+{% for x in m.modules %}<tr><td>{{ x.name }}</td>
+<td><span class="pill {{ 'st-ok' if x.state in ('completed',) else 'st-warn' if x.state == 'completed-warnings' else 'st-bad' }}">{{ x.state|replace('-', ' ')|capitalize }}</span></td>
+<td>{{ x.detail }}{% if x.untested %} {{ x.untested }} not tested.{% endif %}</td></tr>{% endfor %}</table>
+
+{% set tech = m.title.type == 'Technical report' %}<h2>{{ 'Findings overview' if tech else 'Findings by severity' }}</h2>
+<p>{{ m.summary.total }} finding{{ '' if m.summary.total == 1 else 's' }}, {{ m.summary.still_open }} still open.
+{% for s, n in m.summary.by_severity.items() %}<span class="pill sev-{{ s }}">{{ s|capitalize }} {{ n }}</span> {% endfor %}</p>
+{% if not tech %}<h2>Findings and where they are</h2>{% endif %}
+<table><tr><th>#</th><th>Severity</th><th>Finding</th><th>Location</th><th>Confidence</th><th>State</th></tr>
+{% for f in m.findings_overview %}<tr><td>{{ f.n }}</td><td><span class="pill sev-{{ f.severity }}">{{ f.severity|capitalize }}</span></td>
+<td>{{ f.title }}</td><td class="mono" style="word-break:break-all;font-size:8pt">{{ f.location }}</td><td>{{ f.confidence|capitalize }}</td>
+<td>{{ f.state|replace('-', ' ')|capitalize }}</td></tr>{% else %}<tr><td colspan="6">No findings.</td></tr>{% endfor %}</table>
+
+{% if tech %}<h2>Finding details</h2>
+{% for d in m.details %}<div class="finding"><span class="pill sev-{{ d.severity }}">{{ d.severity|capitalize }}</span>
+<span class="pill">{{ d.confidence|capitalize }}</span> <span class="pill">{{ d.state|replace('-', ' ')|capitalize }}</span>
+<h3>{{ d.id }} · {{ d.title }}</h3>
+<dl>{% for k, v in [("Location", d.location.url or d.location.component), ("Type", d.location.kind), ("Host · port", (d.location.host or '') ~ ' · ' ~ (d.location.port or '')),
+  ("Path", d.location.path), ("Parameter", d.location.param), ("HTTP method", d.location.method),
+  ("Module", d.location.module ~ (' · ' ~ d.location.engine_version if d.location.engine_version else '')),
+  ("Found by", d.location.found_by), ("First seen", d.location.first_seen), ("Last seen", d.location.last_seen),
+  ("Latest retest", d.location.latest_retest)] if v %}<dt>{{ k }}</dt><dd class="mono">{{ v }}</dd>{% endfor %}</dl>
+<h3>Description</h3><p>{{ d.description }}</p><h3>Impact</h3><p>{{ d.impact }}</p>
+<h3>Evidence</h3><pre>{{ d.evidence }}</pre>
+<h3>How to reproduce</h3><p>{{ d.reproduce }}</p>
+<h3>Remediation</h3><p>{{ d.remediation }}</p>{% if d.references %}<ul>{% for r in d.references %}<li>{{ r }}</li>{% endfor %}</ul>{% endif %}
+<h3>History</h3><table>{% for h in d.history %}<tr><td style="width:110pt">{{ h.at|ist }}</td><td>{{ h.text }}</td></tr>{% endfor %}</table></div>{% endfor %}{% endif %}
+
+<h2>Limitations</h2><p>{{ m.limitations }}</p>
+</body></html>

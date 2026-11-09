@@ -16,7 +16,7 @@ services:
       retries: 20
 
   migrate:
-    build: ./backend
+    build: {context: ./backend, target: runtime}
     environment:
       MIGRATION_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-preassess}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-preassess}
     command: alembic upgrade head
@@ -24,30 +24,75 @@ services:
       db: {condition: service_healthy}
 
   api:
-    build: ./backend
+    build: {context: ./backend, target: runtime}
     environment:
       APP_ENV: ${APP_ENV:-prod}
       SECRET_KEY: ${SECRET_KEY:?set in .env}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       DATABASE_URL: postgresql+psycopg://app_user:${APP_DB_PASSWORD}@db:5432/${POSTGRES_DB:-preassess}
+      CREDENTIALS_PUBLIC_KEY: ${CREDENTIALS_PUBLIC_KEY:-}
+    volumes:
+      - reports:/data/reports:ro
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=${FORWARDED_ALLOW_IPS:-*}
     depends_on:
       migrate: {condition: service_completed_successfully}
     # no published port: nginx (web) is the only entry, so trusting X-Forwarded-For from any peer is safe
 
   worker:
-    build: ./backend
+    build: {context: ./backend, target: runtime}
     environment:
       APP_ENV: ${APP_ENV:-prod}
       SECRET_KEY: ${SECRET_KEY:?set in .env}
       DATABASE_URL: postgresql+psycopg://app_user:${APP_DB_PASSWORD}@db:5432/${POSTGRES_DB:-preassess}
+      CREDENTIALS_PRIVATE_KEY: ${CREDENTIALS_PRIVATE_KEY:-}
+      ZAP_API_KEY: ${ZAP_API_KEY:?set in .env}
+      EGRESS_TOKEN: ${EGRESS_TOKEN:?set in .env}
+      ENGINE_URL: http://zap:8090
+      EGRESS_CONTROL: http://egress:3129
     command: python -m app.worker.main
+    mem_limit: 768m
+    volumes:
+      - reports:/data/reports
+    networks: [default, engine]
     depends_on:
       migrate: {condition: service_completed_successfully}
 
+  # Guard proxy: the only path out for ZAP. No published ports. On `engine` (zap, worker) and `outbound` (internet) only,
+  # never `default`, so api/db/web cannot reach it. Control API (3129) is token-gated: zap can reach it on `engine` but has no token.
+  egress:
+    build: {context: ./backend, target: runtime}
+    environment:
+      APP_ENV: ${APP_ENV:-prod}
+      EGRESS_TOKEN: ${EGRESS_TOKEN:?set in .env}
+    command: python -m app.egress
+    networks: [outbound, engine]
+    mem_limit: 128m
+
+  zap:
+    image: zaproxy/zap-stable@sha256:9624669db72f54d86c4b46a7064518bd9bf79d8c61a4c31befa9923489f328af  # 2.17.0
+    profiles: [dast]
+    environment:
+      ZAP_API_KEY: ${ZAP_API_KEY:?set in .env}
+    command: >
+      zap.sh -Xmx1g -daemon -host 0.0.0.0 -port 8090
+      -config api.key=${ZAP_API_KEY}
+      -config api.addrs.addr.name=.* -config api.addrs.addr.regex=true
+      -config connection.proxyChain.enabled=true
+      -config connection.proxyChain.hostName=egress
+      -config connection.proxyChain.port=3128
+      -notel -config start.checkForUpdates=false -config start.checkAddonUpdates=false
+    healthcheck:  # the image default probes another port
+      test: ["CMD-SHELL", "curl -fs 'http://localhost:8090/JSON/core/view/version/?apikey=${ZAP_API_KEY}' >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks: [engine]
+    mem_limit: 1600m
+
   # Only for pytest; owner creds live here, never in long-running services.
   test:
-    build: ./backend
+    build: {context: ./backend, target: test}
     profiles: [test]
     environment:
       TEST_DATABASE_URL: postgresql+psycopg://app_user:${APP_DB_PASSWORD}@db:5432/preassess_test
@@ -65,6 +110,18 @@ services:
   testtarget:
     build: ./dev/testtarget
     profiles: [dev]
+    networks: [default, outbound]  # outbound so the dev internal-target rule is reachable through egress
+
+  testportal:
+    build: ./dev/testportal
+    profiles: [dev]
+    networks: [default, outbound]  # deliberately flawed demo portal for the Phase 3 e2e; dev only
+
+networks:
+  outbound: {}  # egress-only route to the internet and testtarget
+  engine:
+    internal: true  # no route to the host or internet; egress is the only bridge
 
 volumes:
   pgdata:
+  reports:

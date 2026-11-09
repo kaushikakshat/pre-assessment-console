@@ -5,12 +5,13 @@ from pydantic import BaseModel
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
-from app.api.catalog import MODULES, QUICK
+from app.api.catalog import DEEP, MODULES, PRE, QUICK
 from app.core import security as sec
 from app.core.audit import record
 from app.db import get_db
-from app.models import Assessment, Job, ModuleRun, SchedulerConfig, User
+from app.models import Assessment, Credential, Job, ModuleRun, SchedulerConfig, User, Wordlist
 from app.scheduler import admission
+from app.worker.modules import wordlists as wl
 
 router = APIRouter()
 ACTIVE = ("queued", "validating", "scheduled", "running", "cancelling")
@@ -26,6 +27,8 @@ class JobIn(BaseModel):
     modules: list[str] | None = None
     authorized: bool = False
     idempotency_key: str = ""
+    wordlists: list[str] = []
+    credential_ids: list[str] = []
 
 
 def shape(db, j: Job, queue=True) -> dict:
@@ -37,7 +40,7 @@ def shape(db, j: Job, queue=True) -> dict:
             "started_at": j.started_at, "ended_at": j.ended_at, "policy_version": j.policy_version,
             "requested_by": u.name, "note": j.note,
             "resume_of": db.scalar(select(Job.display_id).where(Job.id == j.resume_of)) if j.resume_of else None,
-            "review": j.review,
+            "review": j.review, "retest_of": j.retest_of,
             "modules": [{"key": r.key, "name": NAMES.get(r.key, r.key), "state": r.state, "detail": r.detail,
                          "started_at": r.started_at, "ended_at": r.ended_at} for r in runs],
             "queue_position": pos, "wait_estimate": admission.wait_estimate(pos)}
@@ -62,16 +65,37 @@ def _choose_modules(body: JobIn, env: str) -> list[str]:
         picked = list(dict.fromkeys(body.modules))
         if not picked or any(k not in NAMES for k in picked):
             raise err("Choose at least one valid module.")
-    elif body.profile == "quick":
-        picked = list(QUICK)
+    elif body.profile in ("quick", "pre", "deep"):
+        picked = list({"quick": QUICK, "pre": PRE, "deep": DEEP}[body.profile])
     elif body.profile:
         raise err("That scan profile is not available in this release.")
     else:
         raise err("Choose a scan profile or at least one module.")
-    picked = ["reach", *(k for k in picked if k != "reach")]
+    picked = ["reach", *sorted((k for k in picked if k != "reach"), key=DEEP.index)]  # execution order, not click order
     if env == "Production" and not set(picked) <= set(QUICK):
         raise HTTPException(422, "Production targets can only be scanned with Quick Scan.")
     return picked
+
+
+def _check_extras(db, body: JobIn, a: Assessment, cfg: SchedulerConfig):
+    """Wordlist and credential selections: 422 with a field message, never silently trimmed."""
+    if body.wordlists:
+        lists = {w.key: w for w in db.scalars(select(Wordlist).where(Wordlist.key.in_(body.wordlists)))}
+        if any(k not in lists or not lists[k].enabled for k in body.wordlists):
+            raise HTTPException(422, {"fields": {"wordlists": "Choose wordlists from the list; one is unknown or turned off."}})
+        if body.profile not in ("pre", "deep"):
+            raise HTTPException(422, {"fields": {"wordlists": "Wordlists need the Pre-Assessment or Deep Scan profile."}})
+        if body.profile != "deep" and any(w.category == "fuzzing" for w in lists.values()):
+            raise HTTPException(422, {"fields": {"wordlists": "Fuzzing wordlists need the Deep Scan profile."}})
+        n, cap = wl.estimate(db, body.wordlists), cfg.profile_limits[body.profile]["request_cap"]
+        if n > cap:
+            raise HTTPException(422, {"fields": {"wordlists": f"This selection needs about {n} requests; "
+                                                              f"the limit for this profile is {cap}."}})
+    if body.credential_ids:
+        own = set(db.scalars(select(Credential.display_id).where(
+            Credential.assessment_id == a.id, Credential.deleted_at.is_(None))))
+        if not set(body.credential_ids) <= own:
+            raise HTTPException(422, {"fields": {"credential_ids": "Choose accounts saved for this assessment."}})
 
 
 @router.post("/jobs", status_code=202)
@@ -83,6 +107,12 @@ def submit(body: JobIn, user=Depends(sec.current_user), db=Depends(get_db)):
     if not 1 <= len(key) <= 120:
         raise HTTPException(422, {"fields": {"idempotency_key": "Enter a valid value."}})
     modules = _choose_modules(body, a.env)
+    return enqueue(db, user, a, key, modules, body)
+
+
+def enqueue(db, user, a: Assessment, key: str, modules: list[str], body: JobIn, what="Scan", **job_fields):
+    """Idempotency, status, engine, blocked, extras, queue cap and quota checks, then the job and its module rows.
+    Shared by POST /jobs and POST /assessments/{id}/retest."""
     scoped = f"{user.id}:{key}"
     prior = db.scalar(select(Job).where(Job.idempotency_key == scoped))
     if prior:
@@ -91,17 +121,26 @@ def submit(body: JobIn, user=Depends(sec.current_user), db=Depends(get_db)):
         return shape(db, prior)
     if a.status != "active":
         raise HTTPException(409, "This assessment is not ready to scan. Validate the target and wait for approval first.")
+    if admission.uses_engine(modules) and not admission.engine_healthy(db):
+        raise HTTPException(422, {"fields": {"modules" if body.modules else "profile": "The scanning engine is not available right now. Try again shortly."}})
     cfg = db.scalar(select(SchedulerConfig).where(SchedulerConfig.id == 1).with_for_update()
                     .execution_options(populate_existing=True))  # serialises quota and cap checks
     if cfg.emergency or cfg.paused:
         raise HTTPException(503, BLOCKED["emergency" if cfg.emergency else "paused"])
+    other = db.execute(select(Job.type).where(Job.assessment_id == a.id, Job.state.in_(ACTIVE))).scalars().all()
+    if job_fields.get("type") == "retest" and other:  # a concurrent scan could re-observe findings mid-retest
+        raise HTTPException(409, "This assessment already has a queued or running scan.")
+    if "retest" in other:
+        raise HTTPException(409, "A retest is running for this assessment. Wait for it to finish.")
+    _check_extras(db, body, a, cfg)
     count = lambda *where: db.scalar(select(func.count()).select_from(Job).where(*where))  # noqa: E731
     if count(Job.state == "queued") >= cfg.queue_cap:
         raise HTTPException(429, "The scan queue is full. Try again later.")
     if count(Job.requested_by == user.id, Job.state.in_(ACTIVE)) >= cfg.per_user_quota:
         raise HTTPException(429, f"You already have {cfg.per_user_quota} active scans. Wait for one to finish or cancel it.")
-    j = Job(assessment_id=a.id, requested_by=user.id, profile=body.profile if body.modules is None else None,
-            policy_version=a.policy_version, idempotency_key=scoped)
+    j = Job(**{"profile": body.profile if body.modules is None else None, **job_fields},
+            assessment_id=a.id, requested_by=user.id, policy_version=a.policy_version, idempotency_key=scoped,
+            wordlists=body.wordlists, credential_ids=body.credential_ids)
     db.add(j)
     try:
         db.flush()
@@ -110,7 +149,7 @@ def submit(body: JobIn, user=Depends(sec.current_user), db=Depends(get_db)):
         return shape(db, db.scalar(select(Job).where(Job.idempotency_key == scoped)))
     db.refresh(j)
     db.add_all(ModuleRun(job_id=j.id, key=k) for k in modules)
-    record(db, user.email, "job", "submit", j.display_id, "success", f"Scan submitted for {a.display_id}", a.policy_version)
+    record(db, user.email, "job", "submit", j.display_id, "success", f"{what} submitted for {a.display_id}", a.policy_version)
     db.commit()
     return shape(db, j)
 

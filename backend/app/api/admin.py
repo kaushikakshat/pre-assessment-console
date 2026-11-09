@@ -12,7 +12,7 @@ from app.api.jobs import apply_cancel, capacity_shape, shape as job_shape
 from app.core import security as sec
 from app.core.audit import record
 from app.db import get_db
-from app.models import Assessment, AuditEvent, Job, ModuleRun, SchedulerConfig, User, Worker
+from app.models import Assessment, AuditEvent, Job, ModuleRun, SchedulerConfig, User, Wordlist, Worker
 from app.scheduler import admission
 
 router = APIRouter(prefix="/admin", dependencies=[Depends(sec.require_admin)])
@@ -192,7 +192,8 @@ def review(jid: str, body: ReviewIn, admin=Depends(sec.require_admin), db=Depend
 def capacity_response(db) -> dict:
     c = admission._cfg(db)
     return {"config": {"limit": c.concurrency_limit, "aging_enabled": c.aging_enabled, "aging_minutes": c.aging_minutes,
-                       "queue_cap": c.queue_cap, "per_user_quota": c.per_user_quota, "paused": c.paused},
+                       "queue_cap": c.queue_cap, "per_user_quota": c.per_user_quota, "paused": c.paused,
+                       "engine_slots": c.engine_slots, "profile_limits": c.profile_limits},
             "capacity": capacity_shape(db), "workers": workers(db),
             "history": recent_audit(db, AuditEvent.area.in_(("capacity", "worker")), limit=20)}
 
@@ -202,12 +203,20 @@ def get_capacity(db=Depends(get_db)):
     return capacity_response(db)
 
 
+class ProfileLimit(BaseModel):
+    budget_min: int = Field(ge=5, le=600)
+    request_cap: int = Field(ge=100, le=200000)
+    rate_per_s: int = Field(ge=1, le=50)
+
+
 class CapacityIn(ReasonIn):
     limit: int = Field(ge=1, le=admission.CEILING)
     aging_enabled: bool
     aging_minutes: int = Field(ge=1, le=1440)
     queue_cap: int = Field(ge=1, le=10000)
     per_user_quota: int = Field(ge=1, le=1000)
+    engine_slots: int | None = Field(None, ge=1, le=3)
+    profile_limits: dict[Literal["pre", "deep"], ProfileLimit] | None = None
 
 
 @router.put("/capacity")
@@ -217,14 +226,47 @@ def put_capacity(body: CapacityIn, admin=Depends(sec.require_admin), db=Depends(
     if body.limit > cfg.concurrency_limit and body.limit > (n := admission.healthy_workers(db)):
         raise HTTPException(422, f"Only {n} healthy {'worker is' if n == 1 else 'workers are'} available. "
                                  f"Enable or provision more workers before raising the limit to {body.limit}.")
+    if body.engine_slots is not None and body.engine_slots > 1:  # one ZAP and one egress scope cannot isolate two jobs
+        raise HTTPException(422, "Only one scanning engine is provisioned.")
     new = {"concurrency_limit": body.limit, "aging_enabled": body.aging_enabled, "aging_minutes": body.aging_minutes,
            "queue_cap": body.queue_cap, "per_user_quota": body.per_user_quota}
+    if body.engine_slots is not None:
+        new["engine_slots"] = body.engine_slots
+    if body.profile_limits is not None:  # partial: unnamed profiles keep their limits
+        new["profile_limits"] = {**cfg.profile_limits, **{k: v.model_dump() for k, v in body.profile_limits.items()}}
     changes = ", ".join(f"{k} {getattr(cfg, k)} -> {v}" for k, v in new.items() if getattr(cfg, k) != v) or "no change"
     for k, v in new.items():
         setattr(cfg, k, v)
     record(db, admin.email, "capacity", "update", "scheduler", "success", f"{changes}. Reason: {reason}")
     db.commit()
     return capacity_response(db)
+
+
+def wordlist_shape(w: Wordlist) -> dict:
+    return {"key": w.key, "category": w.category, "label": w.label, "lines": w.lines, "enabled": w.enabled}
+
+
+@router.get("/wordlists")
+def get_wordlists(db=Depends(get_db)):
+    return [wordlist_shape(w) for w in db.scalars(select(Wordlist).order_by(Wordlist.key))]
+
+
+class WordlistIn(ReasonIn):
+    key: str
+    enabled: bool
+
+
+@router.put("/wordlists")
+def put_wordlist(body: WordlistIn, admin=Depends(sec.require_admin), db=Depends(get_db)):
+    reason = reason_of(body.reason)
+    w = db.get(Wordlist, body.key)
+    if not w:
+        raise HTTPException(404, "Not found.")
+    w.enabled = body.enabled
+    record(db, admin.email, "capacity", "update", "wordlist", "success",
+           f"{w.key} {'enabled' if body.enabled else 'disabled'}. Reason: {reason}")
+    db.commit()
+    return wordlist_shape(w)
 
 
 class WorkerIn(ReasonIn):

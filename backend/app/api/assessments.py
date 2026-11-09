@@ -30,6 +30,7 @@ class In(BaseModel):
     ports: str = ""
     exclusions: str = ""
     notes: str | None = None
+    allow_untrusted_cert: bool | None = None  # owner opt-in; None keeps the stored value
 
 
 def clean(b: In) -> dict:
@@ -75,7 +76,7 @@ def shape(db, a: Assessment, user: User) -> dict:
     return {"id": a.display_id, "name": a.name, "owner": {"id": owner.display_id, "name": owner.name},
             "target": a.target, "env": a.env, "hosts": a.hosts, "paths": a.paths, "ports": a.ports,
             "exclusions": a.exclusions, "notes": a.notes, "status": a.status, "validation": a.validation,
-            "approval": a.approval, "active_job_id": job, "created_at": a.created_at, "updated_at": a.updated_at,
+            "approval": a.approval, "allow_untrusted_cert": a.allow_untrusted_cert, "active_job_id": job, "created_at": a.created_at, "updated_at": a.updated_at,
             "access": sec.perm_for(user, a)}
 
 
@@ -98,11 +99,13 @@ def list_mine(user=Depends(sec.current_user), db=Depends(get_db)):
 
 @router.post("", status_code=201)
 def create(body: In, user=Depends(sec.current_user), db=Depends(get_db)):
-    a = Assessment(owner_id=user.id, **clean(body))
+    a = Assessment(owner_id=user.id, allow_untrusted_cert=body.allow_untrusted_cert is True, **clean(body))
     db.add(a)
     db.flush()
     db.refresh(a)
     record(db, user.email, "assessment", "create", a.display_id, "success", "Assessment created")
+    if a.allow_untrusted_cert:
+        record(db, user.email, "assessment", "update", a.display_id, "success", "allow untrusted certificate: on")
     out = shape(db, a, user)
     db.commit()
     return out
@@ -120,6 +123,10 @@ def update(aid: str, body: In, user=Depends(sec.current_user), db=Depends(get_db
         raise HTTPException(409, "This assessment has a scan queued or running. Wait for it to finish before editing.")
     for k, v in clean(body).items():
         setattr(a, k, v)
+    if body.allow_untrusted_cert is not None and body.allow_untrusted_cert != a.allow_untrusted_cert:
+        a.allow_untrusted_cert = body.allow_untrusted_cert
+        record(db, user.email, "assessment", "update", a.display_id, "success",
+               f"allow untrusted certificate: {'on' if a.allow_untrusted_cert else 'off'}")
     a.validation = a.approval = a.policy_version = None
     a.status, a.updated_at = "draft", func.now()
     record(db, user.email, "assessment", "update", a.display_id, "success", "Assessment edited; validation cleared")
@@ -154,7 +161,8 @@ def validate(aid: str, user=Depends(sec.current_user), db=Depends(get_db)):
     try:
         snap = (a.target, a.env, a.ports, a.hosts)
         policy = {**pv.rules, "version": pv.version}
-        result = validate_target(*snap[:3], policy, hosts=snap[3], app_env=os.environ.get("APP_ENV", "prod"))
+        result = validate_target(*snap[:3], policy, hosts=snap[3], app_env=os.environ.get("APP_ENV", "prod"),
+                                 verify=not a.allow_untrusted_cert)
     finally:
         db.execute(sql_update(User).where(User.id == user.id).values(validating_until=None))
         db.commit()

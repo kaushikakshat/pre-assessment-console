@@ -2,7 +2,7 @@
 never exceed the limit across processes; nothing is counted in memory."""
 from dataclasses import dataclass
 
-from sqlalchemy import func, select, text, update
+from sqlalchemy import exists, func, select, text, update
 
 from app.core.audit import record
 from app.models import Job, ModuleRun, SchedulerConfig, Worker
@@ -11,6 +11,7 @@ CEILING = 3
 LEASE_SECONDS = 60
 HEALTHY_SECONDS = 30
 ACTIVE = ("running", "cancelling")
+ENGINE_MODULES = {"crawl", "dast", "api"}  # these go through the shared ZAP engine
 # Effective priority: rank (High 0, Normal 1, Low 2) minus one per elapsed aging period, floor 0; ties by seq.
 ORDER = text("""GREATEST((CASE priority WHEN 'High' THEN 0 WHEN 'Normal' THEN 1 ELSE 2 END)
   - (CASE WHEN :aging THEN floor(extract(epoch FROM now() - submitted_at) / 60 / GREATEST(:mins, 1))::int ELSE 0 END), 0), seq""")
@@ -30,6 +31,16 @@ class Capacity:
 def healthy_workers(db) -> int:
     return db.scalar(select(func.count()).select_from(Worker).where(
         Worker.enabled, Worker.last_heartbeat_at > func.now() - text(f"interval '{HEALTHY_SECONDS} seconds'")))
+
+
+def uses_engine(module_keys) -> bool:
+    return bool(ENGINE_MODULES & set(module_keys))
+
+
+def engine_healthy(db) -> bool:
+    return bool(db.scalar(select(func.count()).select_from(Worker).where(
+        Worker.enabled, Worker.engine_ok,
+        Worker.last_heartbeat_at > func.now() - text(f"interval '{HEALTHY_SECONDS} seconds'"))))
 
 
 def _count(db, *states):
@@ -56,7 +67,11 @@ def claim_next(db, worker_id: str) -> Job | None:
         db.rollback()
         return None
     params = {"aging": cfg.aging_enabled, "mins": cfg.aging_minutes}
-    job = db.scalar(select(Job).where(Job.state == "queued").order_by(ORDER.bindparams(**params))
+    q = select(Job).where(Job.state == "queued")
+    on_engine = exists().where(ModuleRun.job_id == Job.id, ModuleRun.key.in_(ENGINE_MODULES))
+    if db.scalar(select(func.count()).select_from(Job).where(Job.state.in_(ACTIVE), on_engine)) >= cfg.engine_slots:
+        q = q.where(~on_engine)  # slots full: a Quick Scan behind an engine job may still start
+    job = db.scalar(q.order_by(ORDER.bindparams(**params))
                     .limit(1).with_for_update(skip_locked=True))
     if not job:
         db.rollback()
@@ -70,9 +85,10 @@ def claim_next(db, worker_id: str) -> Job | None:
     return job
 
 
-def heartbeat(db, worker_id: str, job_id: int | None = None) -> bool:
+def heartbeat(db, worker_id: str, job_id: int | None = None, engine_ok: bool | None = None) -> bool:
     """Returns False when the caller no longer holds the job's lease (it was reaped or reassigned)."""
-    db.execute(update(Worker).where(Worker.name == worker_id).values(last_heartbeat_at=func.now()))
+    vals = {"last_heartbeat_at": func.now(), **({} if engine_ok is None else {"engine_ok": engine_ok})}
+    db.execute(update(Worker).where(Worker.name == worker_id).values(**vals))
     held = True
     if job_id is not None:
         held = db.execute(update(Job).where(Job.id == job_id, Job.lease_owner == worker_id, Job.state.in_(ACTIVE))

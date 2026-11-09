@@ -3,19 +3,33 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext';
 import { api, ApiError } from '../lib/api';
 import {
-  Banner, Button, Card, CapacityMeter, Checkbox, Disclaimer, KeyValue, LoadError, Loading, OptionCard, ProfileCard, ProfileGrid,
+  Advanced, Banner, Button, Card, CapacityMeter, Checkbox, Disclaimer, KeyValue, LoadError, Loading, OptionCard, ProfileCard, ProfileGrid,
   Select, Stepper, StatusBadge, TbdMarker, TextField, Textarea, ValidationResult,
 } from '../components';
 import { BLOCKED_COPY, PROFILE_NAMES } from '../lib/status';
 import { useLoad } from '../lib/useLoad';
-import { ENVIRONMENTS, type Assessment, type Capacity, type Environment, type Job, type ModuleInfo, type ModuleKey, type ProfileInfo, type ProfileKey, type Validation } from '../lib/types';
+import { ENVIRONMENTS, type Assessment, type Capacity, type Environment, type Job, type ModuleInfo, type ModuleKey, type ProfileInfo, type ProfileKey, type SigninState, type Validation, type Wordlist } from '../lib/types';
 
-interface Catalog { profiles: ProfileInfo[]; modules: ModuleInfo[] }
-interface Form { name: string; target: string; env: Environment; hosts: string; paths: string; ports: string; exclusions: string; notes: string }
+interface Limits { budget_min: number; request_cap: number; rate_per_s: number }
+interface Catalog { profiles: ProfileInfo[]; modules: ModuleInfo[]; limits?: { pre: Limits; deep: Limits }; advisory_as_of?: string; wordlists?: Wordlist[] }
+interface Extras { lists: string[]; accounts: string[] }
+const ENGINE_DOWN = 'The scanning engine is not running.';
+const budgetText = (m: number) => (m >= 120 && m % 60 === 0 ? `${m / 60} hours` : `${m} minutes`);
+
+/** Lists and accounts only apply to Pre/Deep; fuzzing lists and accounts only to Deep. Applied wherever they are read. */
+export function effective(run: Run, x: Extras, wordlists: Wordlist[] = []): Extras {
+  const profile = run.mode === 'profile' ? run.profile : null;
+  if (profile !== 'pre' && profile !== 'deep') return { lists: [], accounts: [] };
+  const lists = x.lists.filter((k) => { const w = wordlists.find((l) => l.key === k); return !!w && (profile === 'deep' || w.category === 'discovery'); });
+  return { lists, accounts: profile === 'deep' ? x.accounts : [] };
+}
+/** Fuzzing lists cost 10 requests per line, discovery lists 1 (matches the server). */
+export const estimate = (lists: string[], wordlists: Wordlist[] = []) => lists.reduce((n, k) => { const w = wordlists.find((l) => l.key === k); return n + (w ? w.lines * (w.category === 'fuzzing' ? 10 : 1) : 0); }, 0);
+interface Form { name: string; target: string; env: Environment; hosts: string; paths: string; ports: string; exclusions: string; notes: string; allow_untrusted_cert: boolean }
 type Run = { mode: 'profile'; profile: ProfileKey } | { mode: 'modules'; modules: ModuleKey[] };
 
 const PROD_ONLY = 'Production targets can only be scanned with Quick Scan.';
-const EMPTY: Form = { name: '', target: '', env: 'Development', hosts: '', paths: '/*', ports: '443', exclusions: '', notes: '' };
+const EMPTY: Form = { name: '', target: '', env: 'Development', hosts: '', paths: '/*', ports: '443', exclusions: '', notes: '', allow_untrusted_cert: false };
 const STEPS = ['Target & scope', 'Scan configuration', 'Review & submit'];
 
 export function targetError(raw: string): string | null {
@@ -42,7 +56,7 @@ const forEnv = (run: Run, env: Environment, catalog: Catalog | null): Run => {
 };
 
 const hostOf = (t: string) => { try { return new URL(t.trim()).hostname; } catch { return ''; } };
-const fromAssessment = (a: Assessment): Form => ({ name: a.name, target: a.target, env: a.env, hosts: a.hosts, paths: a.paths, ports: a.ports, exclusions: a.exclusions, notes: a.notes ?? '' });
+const fromAssessment = (a: Assessment): Form => ({ name: a.name, target: a.target, env: a.env, hosts: a.hosts, paths: a.paths, ports: a.ports, exclusions: a.exclusions, notes: a.notes ?? '', allow_untrusted_cert: a.allow_untrusted_cert });
 
 /** /assessments/new[?from=A-…] starts at step 1; /assessments/:id/scan starts at step 2 for an allowed assessment. */
 export function Wizard() {
@@ -79,6 +93,9 @@ function WizardBody({ assessment: initial, scanRoute }: { assessment: Assessment
   const [rawRun, setRun] = useState<Run>({ mode: 'profile', profile: 'quick' });
   const catalog = useLoad<Catalog>(step >= 1 ? '/catalog' : null);
   const run = forEnv(rawRun, form.env, catalog.data);
+  const [extras, setExtras] = useState<Extras>({ lists: [], accounts: [] });
+  const x = effective(run, extras, catalog.data?.wordlists);
+  const signin = useLoad<SigninState>(assessment && step >= 1 && run.mode === 'profile' && run.profile === 'deep' ? `/assessments/${assessment.id}/signin` : null);
 
   const set = (k: keyof Form) => (e: { target: { value: string } }) => {
     setForm((f) => ({ ...f, [k]: e.target.value as never }));
@@ -130,6 +147,9 @@ function WizardBody({ assessment: initial, scanRoute }: { assessment: Assessment
             <Select id="env" label="Environment" required value={form.env} onChange={set('env')} error={errors.env}>
               {ENVIRONMENTS.map((e) => <option key={e}>{e}</option>)}
             </Select>
+            <Checkbox checked={form.allow_untrusted_cert} onChange={(e) => setForm((f) => ({ ...f, allow_untrusted_cert: e.target.checked }))}
+              label="Allow untrusted certificate (test environments)" aria-describedby="cert-hint" />
+            <p id="cert-hint" className="field-hint">Use only for test or UAT sites with a self-signed or internal certificate. The certificate is still reported as a finding.</p>
             <TextField id="hosts" label="In-scope hostnames / IPs" required mono value={form.hosts} onChange={set('hosts')} error={errors.hosts} hint="Filled from the target if left empty." />
             <div className="f2">
               <TextField id="paths" label="In-scope paths" mono value={form.paths} onChange={set('paths')} error={errors.paths} />
@@ -163,12 +183,12 @@ function WizardBody({ assessment: initial, scanRoute }: { assessment: Assessment
       )}
 
       {step === 1 && (
-        <Configure form={form} catalog={catalog} run={run} setRun={setRun} onBack={scanRoute ? undefined : () => setStep(0)} onNext={() => setStep(2)} />
+        <Configure form={form} catalog={catalog} run={run} setRun={setRun} extras={x} setExtras={setExtras} signin={signin.data} assessmentId={assessment?.id} onBack={scanRoute ? undefined : () => setStep(0)} onNext={() => setStep(2)} />
       )}
 
       {step === 2 && assessment && (
         <Review
-          assessment={assessment} form={form} run={run} catalog={catalog.data} policy={validation?.policy_version ?? assessment.validation?.policy_version ?? '—'}
+          assessment={assessment} form={form} run={run} extras={x} signin={signin.data} catalog={catalog.data} policy={validation?.policy_version ?? assessment.validation?.policy_version ?? '—'}
           onBack={() => setStep(1)}
         />
       )}
@@ -190,8 +210,9 @@ function ScopeSummary({ form }: { form: Form }) {
   );
 }
 
-function Configure({ form, catalog, run, setRun, onBack, onNext }: {
-  form: Form; catalog: { data: Catalog | null; error: ApiError | null; reload: () => void }; run: Run; setRun: (r: Run) => void; onBack?: () => void; onNext: () => void;
+function Configure({ form, catalog, run, setRun, extras, setExtras, signin, assessmentId, onBack, onNext }: {
+  form: Form; catalog: { data: Catalog | null; error: ApiError | null; reload: () => void }; run: Run; setRun: (r: Run) => void;
+  extras: Extras; setExtras: (x: Extras) => void; signin: SigninState | null; assessmentId?: string; onBack?: () => void; onNext: () => void;
 }) {
   const c = catalog.data;
   if (catalog.error && !c) return <LoadError error={catalog.error} thing="the scan catalog" onRetry={catalog.reload} />;
@@ -200,7 +221,13 @@ function Configure({ form, catalog, run, setRun, onBack, onNext }: {
   const quickModules = c.profiles.find((p) => p.key === 'quick')?.modules ?? [];
   const selected = run.mode === 'modules' ? run.modules : [];
   const chosen = run.mode === 'profile' ? c.profiles.find((p) => p.key === run.profile) : null;
-  const canContinue = run.mode === 'profile' ? !!chosen?.available : selected.some((m) => m !== 'reach');
+  const pd = chosen && (chosen.key === 'pre' || chosen.key === 'deep') ? chosen.key : null;
+  const limit = pd ? c.limits?.[pd] : undefined;
+  const need = estimate(extras.lists, c.wordlists);
+  const over = !!limit && need > limit.request_cap;
+  const canContinue = run.mode === 'profile' ? !!chosen?.available && !over : selected.some((m) => m !== 'reach');
+  const toggleList = (k: string) => setExtras({ ...extras, lists: extras.lists.includes(k) ? extras.lists.filter((l) => l !== k) : [...extras.lists, k] });
+  const toggleAccount = (id: string) => setExtras({ ...extras, accounts: extras.accounts.includes(id) ? extras.accounts.filter((a) => a !== id) : [...extras.accounts, id] });
   const toggle = (m: ModuleKey) => setRun({ mode: 'modules', modules: selected.includes(m) ? selected.filter((x) => x !== m) : [...selected, m] });
   return (
     <div className="grid2">
@@ -213,7 +240,7 @@ function Configure({ form, catalog, run, setRun, onBack, onNext }: {
         {run.mode === 'profile' ? (
           <ProfileGrid label="Scan profile">
             {c.profiles.map((p) => (
-              <ProfileCard key={p.key} name="profile" profile={prod && p.key !== 'quick' ? { ...p, available: false } : p} unavailableText={prod && p.key !== 'quick' ? PROD_ONLY : undefined}
+              <ProfileCard key={p.key} name="profile" profile={prod && p.key !== 'quick' ? { ...p, available: false } : p} unavailableText={prod && p.key !== 'quick' ? PROD_ONLY : p.key !== 'quick' ? ENGINE_DOWN : undefined}
                 selected={run.mode === 'profile' && run.profile === p.key} onSelect={() => setRun({ mode: 'profile', profile: p.key })} />
             ))}
           </ProfileGrid>
@@ -230,6 +257,22 @@ function Configure({ form, catalog, run, setRun, onBack, onNext }: {
             })}
           </div>
         )}
+        {pd === 'deep' && (
+          <fieldset className="stack">
+            <legend className="group-title">Accounts to test as</legend>
+            {signin?.accounts.map((a) => <Checkbox key={a.id} checked={extras.accounts.includes(a.id)} onChange={() => toggleAccount(a.id)} label={`${a.role_label} · ${a.username_hint}`} />)}
+            {signin && !signin.accounts.length && <small className="muted">No test accounts yet.</small>}
+            {assessmentId && <a href={`/assessments/${assessmentId}?tab=signin`} target="_blank" rel="noopener">Set up sign-in and accounts (opens in a new tab)</a>}
+          </fieldset>
+        )}
+        {pd && !!c.wordlists?.length && (
+          <>
+            <Advanced wordlists={c.wordlists} selected={extras.lists} deep={pd === 'deep'} onToggle={toggleList} />
+            <p className={over ? 'tone-text-danger' : 'muted'} role={over ? 'alert' : undefined}>
+              {over ? `This selection needs about ${need.toLocaleString('en-IN')} requests; the limit for this profile is ${limit!.request_cap.toLocaleString('en-IN')}.` : `About ${need.toLocaleString('en-IN')} extra requests`}
+            </p>
+          </>
+        )}
         <div className="filters">
           {onBack && <Button onClick={onBack}>Back</Button>}
           <Button variant="primary" disabled={!canContinue} onClick={onNext}>Continue to review</Button>
@@ -241,7 +284,11 @@ function Configure({ form, catalog, run, setRun, onBack, onNext }: {
           <KeyValue items={[
             { label: 'Expected impact', value: chosen?.impact ?? 'Depends on the modules chosen' },
             { label: 'Estimated duration', value: chosen?.duration ?? 'Depends on the modules chosen' },
-            { label: 'Request cap and rate', value: <TbdMarker label="TBD" od={6} /> },
+            ...(limit ? [
+              { label: 'Time budget', value: `Stops after ${budgetText(limit.budget_min)} and reports what it found` },
+              { label: 'Request cap and rate', value: `${limit.request_cap.toLocaleString('en-IN')} requests · ${limit.rate_per_s} per second` },
+              ...(c.advisory_as_of ? [{ label: 'Advisory data as of', value: c.advisory_as_of }] : []),
+            ] : [{ label: 'Request cap and rate', value: <TbdMarker label="TBD" od={6} /> }]),
             { label: 'Crawl depth and timeouts', value: <TbdMarker label="TBD" od={6} /> },
             { label: 'Priority', value: 'Normal · set by an administrator' },
           ]} />
@@ -251,8 +298,8 @@ function Configure({ form, catalog, run, setRun, onBack, onNext }: {
   );
 }
 
-function Review({ assessment, form, run, catalog, policy, onBack }: {
-  assessment: Assessment; form: Form; run: Run; catalog: Catalog | null; policy: string; onBack: () => void;
+function Review({ assessment, form, run, extras, signin, catalog, policy, onBack }: {
+  assessment: Assessment; form: Form; run: Run; extras: Extras; signin: SigninState | null; catalog: Catalog | null; policy: string; onBack: () => void;
 }) {
   const [key] = useState(uuid); // one key per review screen: a retry returns the same job
   const [authorized, setAuthorized] = useState(false);
@@ -268,12 +315,12 @@ function Review({ assessment, form, run, catalog, policy, onBack }: {
   const submit = async () => {
     setBusy(true); setError(null);
     try {
-      const body = { assessment_id: assessment.id, profile: run.mode === 'profile' ? run.profile : null, modules: run.mode === 'modules' ? run.modules : null, authorized: true, idempotency_key: key };
+      const body = { assessment_id: assessment.id, profile: run.mode === 'profile' ? run.profile : null, modules: run.mode === 'modules' ? run.modules : null, authorized: true, idempotency_key: key, ...(extras.lists.length ? { wordlists: extras.lists } : {}), ...(extras.accounts.length ? { credential_ids: extras.accounts } : {}) };
       const j = await api<Job>('/jobs', { method: 'POST', body });
       if (j?.id) setJob(j); else setError({ unavailable: true, text: '' });
     } catch (e) {
       const client = e instanceof ApiError && e.status > 0 && e.status < 500;
-      setError({ unavailable: !client, text: client ? e.detail : '' });
+      setError({ unavailable: !client, text: client ? (e.fields?.wordlists ?? e.fields?.profile ?? e.fields?.credential_ids ?? e.fields?.modules ?? e.detail) : '' });
     }
     setBusy(false);
   };
@@ -309,6 +356,8 @@ function Review({ assessment, form, run, catalog, policy, onBack }: {
           { label: 'Scope', value: `${form.hosts} · ${form.paths} · ports ${form.ports}`, mono: true },
           { label: 'Run', value: run.mode === 'profile' ? PROFILE_NAMES[run.profile] : 'Individual modules' },
           { label: 'Modules', value: chips },
+          ...(extras.accounts.length ? [{ label: 'Accounts', value: extras.accounts.map((id) => signin?.accounts.find((a) => a.id === id)?.role_label ?? id).join(', ') }] : []),
+          ...(extras.lists.length ? [{ label: 'Wordlists', value: extras.lists.map((k) => catalog?.wordlists?.find((w) => w.key === k)?.label ?? k).join(', ') }] : []),
           { label: 'Policy', value: policy, mono: true },
         ]} />
         <p className="muted">Queue limits: <TbdMarker label="TBD" od={10} /></p>

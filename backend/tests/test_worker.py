@@ -160,3 +160,121 @@ def test_finding_text_fields_are_redacted_and_fingerprint_uses_redacted(setup):
         (f,) = db.query(Finding).filter_by(assessment_id=aid).all()
         blob = f.title + f.description + f.reproduce
         assert "admin@corp.com" not in blob and "abc123" not in blob and "abc.def" not in blob and "[REDACTED]" in f.title
+
+
+def test_wordlist_seed_keeps_admin_flag(tmp_path):
+    from sqlalchemy import text
+    from app.worker.modules import wordlists
+    for rel, body in (("Discovery/Web/a.txt", "x\ny\n"), ("Fuzzing/f.txt", "1\n"), ("Passwords/p.txt", "pw\n")):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(body)
+    with engine.begin() as c:
+        c.execute(text("DELETE FROM wordlists"))
+    with SessionLocal() as db:
+        assert wordlists.seed(db, tmp_path) == 2
+    with engine.begin() as c:
+        c.execute(text("UPDATE wordlists SET enabled=false WHERE key='Fuzzing/f.txt'"))
+    with SessionLocal() as db:
+        wordlists.seed(db, tmp_path)
+    with engine.connect() as c:
+        rows = c.execute(text("SELECT key, category, lines, enabled FROM wordlists ORDER BY key")).all()
+    assert rows == [("Discovery/Web/a.txt", "discovery", 2, True), ("Fuzzing/f.txt", "fuzzing", 1, False)]
+    with SessionLocal() as db:
+        assert wordlists.estimate(db, ["Discovery/Web/a.txt", "Fuzzing/f.txt"], forms=10) == 12
+        assert wordlists.seed(db, tmp_path) == 0  # already seeded: skipped
+
+
+def test_lease_heartbeat_updates_engine_ok(monkeypatch):
+    from sqlalchemy import text
+    from test_scheduler import workers
+    (name,) = workers(1, engine_ok=True)
+    monkeypatch.setattr(wm, "HEARTBEAT_SECONDS", 0.05)
+    monkeypatch.setattr(wm, "engine_ok", lambda: False)
+    monkeypatch.setattr(wm, "run_job", lambda job_id, n, halt, *a: time.sleep(0.4))
+    wm.run_with_lease(None, name, threading.Event())  # job_id None: only the worker row is touched
+    with engine.connect() as c:
+        assert c.execute(text("SELECT engine_ok FROM workers WHERE name=:n"), {"n": name}).scalar() is False
+
+
+@pytest.mark.parametrize("allow", [False, True])
+def test_engine_modules_honour_untrusted_cert_decision(setup, monkeypatch, allow):
+    import ssl
+    w, aid, uid, fakes = setup
+    opened = []
+
+    class Probe:
+        def __init__(self, *a, **kw): pass
+        def get(self, url, **kw): raise ssl.SSLCertVerificationError("self-signed")
+        def close(self): pass
+
+    class Session:
+        zap, exclude = None, []
+        def __init__(self, *a, **kw): opened.append(1)
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    fakes["crawl"] = lambda ctx: ModuleResult("completed", "ok")
+    monkeypatch.setattr(wm, "SafeClient", Probe)
+    monkeypatch.setattr(wm.stages, "EngineSession", Session)
+    with engine.begin() as c:
+        c.execute(text("UPDATE assessments SET allow_untrusted_cert=:v WHERE id=:i"), {"v": allow, "i": aid})
+    jid = add_job(aid, uid, modules=("reach", "crawl"))
+    claim(w)
+    run(jid, w)
+    state, mods = snapshot(jid)
+    if allow:  # the probe is skipped and the engine opens
+        assert mods["crawl"][0] == "completed" and opened
+    else:
+        assert mods["crawl"] == ("failed", wm.UNTRUSTED_CERT) and not opened and state == "completed-warnings"
+
+
+def test_cert_probe_fails_closed_after_one_retry(setup, monkeypatch):
+    import httpx
+    w, aid, uid, fakes = setup
+    calls = []
+
+    class Probe:
+        def __init__(self, *a, **kw): pass
+        def get(self, url, **kw):
+            calls.append(1)
+            raise httpx.ConnectTimeout("slow")
+        def close(self): pass
+
+    fakes["crawl"] = lambda ctx: ModuleResult("completed", "ok")
+    monkeypatch.setattr(wm, "SafeClient", Probe)
+    jid = add_job(aid, uid, modules=("reach", "crawl"))
+    claim(w)
+    run(jid, w)
+    assert snapshot(jid)[1]["crawl"] == ("failed", wm.UNREACHABLE_CERT) and len(calls) == 2
+
+
+def test_login_and_otp_urls_are_excluded_from_engine_and_modules(setup, monkeypatch):
+    """Safety constraint: the login/OTP URLs are never crawled, fuzzed or attacked, with or without accounts."""
+    w, aid, uid, fakes = setup
+    seen = {}
+
+    class Session:
+        zap = None
+        def __init__(self, job, a, scope, **kw):
+            seen["extra"] = kw.get("extra_exclude")
+            self.exclude = wm.stages.excluded_regexes(a, kw.get("extra_exclude", ()))
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def crawl(ctx):
+        seen["rc"] = ctx.run_ctx["exclude"]
+        return ModuleResult("completed", "ok")
+
+    fakes["crawl"] = crawl
+    monkeypatch.setattr(wm.stages, "EngineSession", Session)
+    monkeypatch.setattr(wm, "untrusted_cert", lambda args: None)
+    with SessionLocal() as db:
+        db.add(wm.LoginSetup(assessment_id=aid, style="single", login_url="http://x.test/login", username_field="u",
+                             password_field="p", logged_in_indicator="ok", otp_url="http://x.test/otp"))
+        db.commit()
+    jid = add_job(aid, uid, modules=("reach", "crawl"))
+    claim(w)
+    run(jid, w)
+    assert seen["extra"] == ["http://x.test/login", "http://x.test/otp"]
+    import re
+    assert all(any(re.fullmatch(r, u + "?x=1") for r in seen["rc"]) for u in seen["extra"])  # ZAP exclusions and run_ctx

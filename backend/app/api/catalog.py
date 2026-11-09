@@ -1,12 +1,20 @@
+import json
+from pathlib import Path
+
 from fastapi import APIRouter, Depends
+from sqlalchemy import select
 
 from app.core.security import current_user
+from app.db import get_db
+from app.models import SchedulerConfig, Wordlist
+from app.scheduler.admission import ENGINE_MODULES, engine_healthy
 
 router = APIRouter()
 
 QUICK = ["reach", "ports", "tls", "headers", "exposed", "finger"]
+# Execution order: sign in (auth) before crawl; access and cval last.
 PRE = QUICK + ["crawl", "cms", "config"]
-DEEP = PRE + ["dast", "api", "auth", "access", "cval"]
+DEEP = QUICK + ["auth", "crawl", "cms", "config", "dast", "api", "access", "cval"]
 PROFILES = [
     ("quick", "Quick Scan", "A fast, low-impact check of reachability, ports, certificates, headers, exposed files and technology.",
      QUICK, True, "Seconds to minutes for small targets", "Low"),
@@ -33,11 +41,19 @@ MODULES = [
 ]
 
 
+ADVISORY_AS_OF = json.loads((Path(__file__).parents[2] / "vendor" / "manifest.json").read_text())["advisory_as_of"]
+
+
 @router.get("/catalog")
-def catalog(user=Depends(current_user)):
+def catalog(user=Depends(current_user), db=Depends(get_db)):
+    up = engine_healthy(db)
     return {
-        "profiles": [{"key": k, "name": n, "description": d, "modules": m, "available": a, "duration": dur, "impact": imp}
+        "profiles": [{"key": k, "name": n, "description": d, "modules": m, "available": a or up, "duration": dur, "impact": imp}
                      for k, n, d, m, a, dur, imp in PROFILES],
-        "modules": [{"key": k, "name": n, "description": d, "available": k in QUICK,
+        "modules": [{"key": k, "name": n, "description": d, "available": up or k not in ENGINE_MODULES,
                      "profiles": [p[0] for p in PROFILES if k in p[3]]} for k, n, d in MODULES],
+        "limits": db.scalar(select(SchedulerConfig.profile_limits).where(SchedulerConfig.id == 1)),
+        "advisory_as_of": ADVISORY_AS_OF,
+        "wordlists": [{"key": w.key, "category": w.category, "label": w.label, "lines": w.lines}
+                      for w in db.scalars(select(Wordlist).where(Wordlist.enabled).order_by(Wordlist.key))],
     }

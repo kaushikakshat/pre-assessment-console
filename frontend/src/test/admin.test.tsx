@@ -8,7 +8,7 @@ import { ToastProvider } from '../components';
 let me: Record<string, unknown> = { id: 'U-001', name: 'Ada Admin', email: 'ada@example.test', role: 'admin', team: null, must_change_password: false };
 const json = (status: number, body?: unknown) => new Response(body === undefined ? null : JSON.stringify(body), { status });
 const capacity = { active: 0, limit: 1, effective_limit: 1, queued: 0, healthy_workers: 1, ceiling: 3, blocked_reason: null };
-const config = { limit: 1, aging_enabled: false, aging_minutes: 30, queue_cap: 50, per_user_quota: 3, paused: false };
+const config = { limit: 1, aging_enabled: false, aging_minutes: 30, queue_cap: 50, per_user_quota: 3, paused: false, engine_slots: 1, profile_limits: { pre: { budget_min: 30, request_cap: 5000, rate_per_s: 5 }, deep: { budget_min: 180, request_cap: 50000, rate_per_s: 10 } } };
 const assessment = (own: boolean) => ({
   id: 'A-0002', name: 'Billing', owner: { id: own ? 'U-001' : 'U-002', name: 'Someone' }, target: 'https://billing.example.com', env: 'Staging', hosts: '', paths: '', ports: '', exclusions: '', notes: null,
   status: 'awaiting-approval', validation: { outcome: 'approval', checks: [], normalized_target: 'https://billing.example.com/', policy_version: 'v1', decided_at: '2026-11-09T08:50:00Z' },

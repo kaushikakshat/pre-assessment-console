@@ -9,3 +9,6 @@ pyotp
 httpx==0.28.1
 httpcore==1.0.9
 pytest
+cryptography==50.0.2
+weasyprint==70.0
+jinja2==3.1.6
