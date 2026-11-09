@@ -2,11 +2,14 @@
 import ipaddress
 import re
 import socket
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlsplit
 
 from app.targets import ipguard
+import httpx
+
 from app.targets.safe_http import BlockedAddress, SafeClient
 
 LABELS = {"url": "URL", "dns": "DNS resolution", "addresses": "Destination addresses", "redirects": "Redirects",
@@ -34,6 +37,14 @@ class Parsed:
         return f"{self.scheme}://{h}{f':{self.port}' if self.port else ''}{self.path}"
 
 
+def _is_ip(s: str) -> bool:
+    try:
+        ipaddress.ip_address(s)
+        return True
+    except ValueError:
+        return False
+
+
 def parse_target(target: str) -> Parsed:
     """Raises ValueError with the user-facing message (DESIGN_SYSTEM §7.2)."""
     t = (target or "").strip()
@@ -55,12 +66,13 @@ def parse_target(target: str) -> Parsed:
         ipaddress.ip_address(raw_host)
         host = raw_host.lower()
     except ValueError:
-        if _NUMERIC_TLD.fullmatch(raw_host.rstrip(".").rsplit(".", 1)[-1]):  # 2130706433, 0x7f.1, 127.1, 017...
-            raise ValueError("Use a hostname or a standard IP address.") from None
         try:
-            host = ipguard.normalize_host(raw_host)
+            host = ipguard.normalize_host(raw_host)  # NFKC/IDNA first: the resolver sees this form, so check it
         except UnicodeError:
             raise ValueError("Enter a valid URL, for example https://app.example.com.") from None
+        # a non-ASCII spelling of an IP is ambiguous too
+        if _is_ip(host) or _NUMERIC_TLD.fullmatch(host.rsplit(".", 1)[-1]):  # 2130706433, 0x7f.1, 127.1, 017...
+            raise ValueError("Use a hostname or a standard IP address.")
         if not host or not _HOSTNAME.fullmatch(host):
             raise ValueError("Enter a valid URL, for example https://app.example.com.")
     return Parsed(u.scheme.lower(), host, port, u.path or "/")
@@ -97,8 +109,20 @@ def first_rule(policy, host, addrs, env):
     return next((r for r in policy.get("rules", []) if _matches(r, host, addrs, env)), None)
 
 
-def _internal_ok(rule, app_env) -> bool:
-    return bool(rule and rule.get("internal") and (not rule.get("dev_only") or app_env == "dev"))
+def _internal(rule, app_env, addrs):
+    """Private-address allowance from the matching rule: False, or the allowed ranges (None = any private).
+    Only host/address-specific rule types qualify; every private answer must be inside an ip/cidr rule's range."""
+    if not (rule and rule.get("internal") and (not rule.get("dev_only") or app_env == "dev")
+            and rule.get("match") in ("domain", "suffix", "ip", "cidr")):
+        return False
+    if rule["match"] in ("domain", "suffix"):
+        return None
+    try:
+        net = ipaddress.ip_network(str(rule["value"]).strip(), strict=False)
+    except ValueError:
+        return False
+    private = [a for a in addrs if ipguard.classify(a)[0] == "private"]
+    return [net] if all(ipaddress.ip_address(a) in net for a in private) else False
 
 
 def _check_addrs(addrs, internal: bool):
@@ -114,11 +138,19 @@ def _check_addrs(addrs, internal: bool):
 
 
 def validate_target(target, env, ports_field, policy, resolver=socket.getaddrinfo, fetch_redirect=None,
-                    hosts="", app_env="prod") -> dict:
+                    hosts="", app_env="prod", budget=15) -> dict:
     """policy: {'version', 'permitted_ports', 'no_match', 'rules'}. fetch_redirect(url) -> (status, location|None);
-    the default uses SafeClient. Unknown APP_ENV is treated as non-dev."""
-    c = {"internal": set(), "needs_approval": False}
-    scope = {t for t in re.split(r"[,\s]+", (hosts or "").lower()) if t}
+    the default uses SafeClient.
+    budget: wall-clock seconds for all redirect hops combined. Unknown APP_ENV is treated as non-dev."""
+    c = {"internal": {}, "needs_approval": False}
+    deadline = time.monotonic() + budget
+    scope = set()
+    for t in re.split(r"[,\s]+", hosts or ""):
+        try:
+            if t:
+                scope.add(ipguard.normalize_host(t))
+        except UnicodeError:
+            pass  # an unusable entry can never match a host
 
     def url():
         try:
@@ -136,10 +168,10 @@ def validate_target(target, env, ports_field, policy, resolver=socket.getaddrinf
 
     def addresses():
         c["rule"] = first_rule(policy, c["p"].host, c["addrs"], env)
-        internal = _internal_ok(c["rule"], app_env)
-        res, detail = _check_addrs(c["addrs"], internal)
-        if res == "pass" and internal and any(ipguard.classify(a)[0] for a in c["addrs"]):
-            c["internal"].add(c["p"].host)
+        internal = _internal(c["rule"], app_env, c["addrs"])
+        res, detail = _check_addrs(c["addrs"], internal is not False)
+        if res == "pass" and internal is not False and any(ipguard.classify(a)[0] for a in c["addrs"]):
+            c["internal"][c["p"].host] = internal
             return "warn", f"Internal target allowed by rule {c['rule']['id']}"
         return res, detail
 
@@ -163,7 +195,7 @@ def validate_target(target, env, ports_field, policy, resolver=socket.getaddrinf
 
     def default_fetch(u):
         with SafeClient(scope | {c["p"].host}, c["internal"], resolver=resolver) as cl:
-            r = cl.get(u)
+            r = cl.get(u, deadline=deadline)
             return r.status_code, r.headers.get("location")
 
     def redirects():
@@ -174,11 +206,15 @@ def validate_target(target, env, ports_field, policy, resolver=socket.getaddrinf
         allowed = scope | {c["p"].host}
         for hop in range(MAX_HOPS + 1):
             try:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError
                 status, loc = fetch(cur)
             except BlockedAddress:
                 return "fail", "A request was refused because the destination address is not permitted."
-            except Exception:
+            except (httpx.HTTPError, OSError, TimeoutError):
                 return "warn", "Target did not respond; redirects not checked"
+            except Exception:  # fail closed: anything unexpected is not a pass
+                return "fail", "The redirect check could not be completed safely."
             if status not in (301, 302, 303, 307, 308) or not loc:
                 return "pass", "No redirect leaves the approved scope." if hop else "No redirects."
             if hop == MAX_HOPS:
@@ -195,14 +231,16 @@ def validate_target(target, env, ports_field, policy, resolver=socket.getaddrinf
             except OSError:
                 return "fail", f"Redirect leaves the approved scope: {nxt.host}"
             rule = first_rule(policy, nxt.host, addrs, env)
-            internal = _internal_ok(rule, app_env)
-            res, detail = _check_addrs(addrs, internal)
+            if rule and rule.get("outcome") == "deny":
+                return "fail", f"Redirect blocked: denied by rule {rule['id']}."
+            internal = _internal(rule, app_env, addrs)
+            res, detail = _check_addrs(addrs, internal is not False)
             if res == "fail":
                 return "fail", f"Redirect blocked: {detail}"
             if nxt.effective_port not in policy.get("permitted_ports", []):
                 return "fail", f"Redirect blocked: port {nxt.effective_port} is not permitted by policy."
-            if internal:
-                c["internal"].add(nxt.host)
+            if internal is not False and any(ipguard.classify(a)[0] for a in addrs):
+                c["internal"][nxt.host] = internal
             cur = nxt.normalized
         return "pass", ""  # unreachable
 

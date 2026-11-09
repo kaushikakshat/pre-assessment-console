@@ -92,3 +92,26 @@ def test_catalog(users):
     assert c["profiles"][0]["modules"] == ["reach", "ports", "tls", "headers", "exposed", "finger"]
     assert {m["key"] for m in c["modules"] if m["available"]} == set(c["profiles"][0]["modules"])
     assert len(c["modules"]) == 14
+
+
+def test_hosts_field_validated(users):
+    r = users[0].post("/api/assessments", json={**BODY, "hosts": "ok.example.com, a..b"})
+    assert r.status_code == 422 and "hosts" in r.json()["detail"]["fields"]
+
+
+def test_validate_limits(users, monkeypatch):
+    o1, *_ = users
+    fake_net(monkeypatch, {"app.example.com": ["93.184.216.34"]})
+    aid = o1.post("/api/assessments", json=BODY).json()["id"]
+    from app.models import User
+    with SessionLocal() as db:
+        uid = db.scalar(select(User.id).where(User.email == o1.get("/api/auth/me").json()["email"]))
+    api._running.add(uid)  # simulate a validation already in flight for this user
+    try:
+        r = o1.post(f"/api/assessments/{aid}/validate")
+        assert r.status_code == 409 and r.json()["detail"] == "A validation is already running for you."
+    finally:
+        api._running.discard(uid)
+    for _ in range(api.VALIDATES_PER_MIN):
+        assert o1.post(f"/api/assessments/{aid}/validate").status_code == 200
+    assert o1.post(f"/api/assessments/{aid}/validate").status_code == 429

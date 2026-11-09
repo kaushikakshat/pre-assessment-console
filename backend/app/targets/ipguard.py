@@ -8,6 +8,8 @@ _METADATA = {ipaddress.ip_address("fd00:ec2::254"): "cloud metadata",
              ipaddress.ip_address("100.100.100.200"): "cloud metadata"}
 _6TO4 = ipaddress.ip_network("2002::/16")
 _NAT64 = ipaddress.ip_network("64:ff9b::/96")
+_NAT64_LOCAL = ipaddress.ip_network("64:ff9b:1::/48")
+_THIS_NET = ipaddress.ip_network("0.0.0.0/8")
 _pool = ThreadPoolExecutor(max_workers=8)  # getaddrinfo has no timeout of its own
 
 
@@ -20,9 +22,20 @@ def classify(ip) -> tuple[str | None, str | None]:
             embedded = ipaddress.IPv4Address((int(ip) >> 80) & 0xFFFFFFFF)
         if embedded is None and ip in _NAT64:
             embedded = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+        if embedded is None and ip.teredo:
+            embedded = ip.teredo[1]
+        if embedded is None and ip in _NAT64_LOCAL:  # RFC 8215: variable layout, so check both plausible positions
+            b = ip.packed
+            for cand in (ipaddress.IPv4Address(b[12:]), ipaddress.IPv4Address(b[6:8] + b[9:11])):
+                kind, why = classify(cand)
+                if kind:
+                    return "hard", f"embedded IPv4 is {why}"
+            return None, None
         if embedded is not None:
             kind, why = classify(embedded)
             return ("hard", f"embedded IPv4 is {why}") if kind else (None, None)
+    if ip.version == 4 and ip in _THIS_NET:
+        return "hard", "unspecified"
     if ip in _METADATA:
         return "hard", _METADATA[ip]
     for name in ("loopback", "unspecified", "link_local", "multicast", "reserved"):

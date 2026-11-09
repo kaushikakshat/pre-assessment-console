@@ -2,6 +2,7 @@ import http.server
 import ssl
 import subprocess
 import threading
+import zlib
 
 import httpx
 import pytest
@@ -19,6 +20,14 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/big":
             body = b"x" * 2_000_000
+        elif self.path == "/bomb":
+            body = zlib.compress(b"\0" * 60_000_000)
+            self.send_response(200)
+            self.send_header("Content-Encoding", "deflate")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         elif self.path == "/redir":
             self.send_response(302)
             self.send_header("Location", "http://app.test/next")
@@ -67,6 +76,23 @@ def test_private_allowed_only_for_internal_host_but_never_loopback():
             c.get("http://app.test/")
 
 
+def test_internal_ranges_enforced_at_connect_time():
+    import ipaddress
+    nets = [ipaddress.ip_network("10.0.0.0/24")]
+    r = lambda host, port, **kw: [(2, 1, 6, "", ("10.0.0.5", 0)), (2, 1, 6, "", ("10.9.9.9", 0))]  # noqa: E731
+    with SafeClient({"app.test"}, internal_hosts={"app.test": nets}, resolver=r) as c, pytest.raises(BlockedAddress):
+        c.get("http://app.test/")
+
+
+def test_transport_integrity_assertion(monkeypatch):
+    import httpcore
+    from app.targets import safe_http
+    monkeypatch.setattr(safe_http._Transport, "__init__",
+                        lambda self, backend: httpx.HTTPTransport.__init__(self))  # unguarded pool
+    with pytest.raises(RuntimeError):
+        SafeClient({"app.test"})
+
+
 def test_out_of_scope_raises_before_connecting():
     with SafeClient({"app.test"}, resolver=lambda *a, **k: pytest.fail("resolved")) as c:
         for u in ("http://other.test/", "ftp://app.test/", "http://127.0.0.1/"):
@@ -78,10 +104,12 @@ def test_local_server_host_header_truncate_no_redirect_cap():
     s = serve()
     try:
         port = s.server_port
-        with SafeClient({"app.test"}, resolver=resolver_to("127.0.0.1"), guard=allow_all, max_requests=4) as c:
+        with SafeClient({"app.test"}, resolver=resolver_to("127.0.0.1"), guard=allow_all, max_requests=5) as c:
             assert c.get(f"http://app.test:{port}/").text == f"host=app.test:{port}"
             big = c.get(f"http://app.test:{port}/big")
             assert big.truncated and len(big.content) == 1_000_000
+            bomb = c.get(f"http://app.test:{port}/bomb")
+            assert bomb.truncated and len(bomb.content) == 1_000_000
             r = c.get(f"http://app.test:{port}/redir")
             assert r.status_code == 302 and r.headers["location"] == "http://app.test/next"
             assert c.head(f"http://app.test:{port}/").status_code in (200, 501)

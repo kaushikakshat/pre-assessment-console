@@ -1,3 +1,4 @@
+import httpx
 import pytest
 
 from app.targets.validate import parse_target, validate_target
@@ -46,10 +47,49 @@ def results(v):
     ("http://1.2.3.4.5/", "standard IP"), ("http://017.0.0.1/", "standard IP"),
     ("ftp://example.com/", "Use http or https."), ("https://user:pw@example.com/", "Remove credentials"),
     ("https://@example.com/", "Remove credentials"), ("", "Enter a target URL."), ("https:///x", "valid URL"),
-    ("https://exa mple.com/", "valid URL"), ("https://example.com:99999/", "valid URL")])
+    ("https://exa mple.com/", "valid URL"), ("http://２１３０７０６４３３/", "standard IP"),
+    ("http://127。1/", "standard IP"), ("http://１５６６４６４５２２/", "standard IP"),
+    ("http://９３.１８４.２１６.３４/", "standard IP"), ("http://a..b/", "valid URL"), ("https://example.com:99999/", "valid URL")])
 def test_parse_rejects(t, msg):
     with pytest.raises(ValueError, match=msg):
         parse_target(t)
+
+
+def test_internal_rule_types_and_ranges():
+    def go(rule, host, ips):
+        pol = {**POLICY, "rules": [{"id": "R-X", "outcome": "allow", "internal": True, **rule}]}
+        return validate_target(f"http://{host}/", "Staging", "80", pol, resolver({host: ips}), Fetch(), "", "dev")
+    assert go({"match": "env", "value": "staging"}, "x.test", ["10.0.0.5"])["outcome"] == "blocked"
+    assert go({"match": "domain", "value": "x.test"}, "x.test", ["10.9.9.9"])["outcome"] == "allowed"
+    cidr = {"match": "cidr", "value": "10.0.0.0/24"}
+    assert go(cidr, "z.test", ["10.0.0.5"])["outcome"] == "allowed"
+    assert go(cidr, "z.test", ["10.0.0.5", "10.5.5.5"])["outcome"] == "blocked"  # one answer outside the range
+
+
+def test_redirect_hop_deny_rule():
+    t = {"app.example.com": [PUB], "bad.example.com": [PUB]}
+    v = run(table=t, hosts="bad.example.com", fetch=Fetch((302, "https://bad.example.com/")))
+    assert results(v)["redirects"] == "fail" and "denied by rule R-02" in v["checks"][3]["detail"]
+
+
+def test_unexpected_fetch_error_fails_closed_but_http_errors_warn():
+    assert results(run(fetch=Fetch(KeyError("boom"))))["redirects"] == "fail"
+    assert results(run(fetch=Fetch(httpx.ConnectError("x"))))["redirects"] == "warn"
+    assert results(run(hosts="a..b"))["url"] == "pass"  # junk scope entries are ignored, not fatal
+
+
+def test_budget_exhausted_warns():
+    v = validate_target("https://app.example.com/", "Staging", "443", POLICY,
+                        resolver({"app.example.com": [PUB]}), Fetch(), budget=-1)
+    assert results(v)["redirects"] == "warn"
+
+
+def test_default_fetch_blocks_rebinding():
+    answers = iter([[PUB], ["127.0.0.1"]])  # public at validation (dns), loopback at connect time
+    r = lambda host, port, **kw: [(2, 1, 6, "", (ip, 0)) for ip in next(answers)]  # noqa: E731
+    v = validate_target("http://app.example.com/", "Staging", "80", POLICY, r)
+    assert v["outcome"] == "blocked" and results(v)["redirects"] == "fail"
+    assert "refused" in v["checks"][3]["detail"]
 
 
 def test_parse_normalises():

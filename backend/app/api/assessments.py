@@ -1,4 +1,7 @@
 import os
+import re
+import threading
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -8,6 +11,7 @@ from app.core import security as sec
 from app.core.audit import record
 from app.db import get_db
 from app.models import Assessment, AuditEvent, Finding, Job, PolicyVersion, User
+from app.targets import ipguard
 from app.targets.validate import parse_ports, parse_target, validate_target
 
 router = APIRouter(prefix="/assessments")
@@ -42,6 +46,15 @@ def clean(b: In) -> dict:
     for f in ("hosts", "paths", "exclusions", "notes"):
         if len(getattr(b, f) or "") > 4000:
             err[f] = "Too long."
+    for h in re.split(r"[,\s]+", b.hosts.strip()):
+        try:
+            if h:
+                ipguard.normalize_host(h)
+                if not re.fullmatch(r"[^\s/@?#]+", h):
+                    raise ValueError
+        except (UnicodeError, ValueError):
+            err["hosts"] = "Enter hostnames or IP addresses separated by commas."
+            break
     ports = b.ports.strip() or (("443" if p.scheme == "https" else "80") if p else "")
     if ports:
         try:
@@ -117,6 +130,11 @@ def update(aid: str, body: In, user=Depends(sec.current_user), db=Depends(get_db
     return out
 
 
+# shortcut: in-flight tracking is per process (single api process in compose); move to a DB lock if scaled out.
+_running, _running_lock = set(), threading.Lock()
+VALIDATES_PER_MIN = 10
+
+
 @router.post("/{aid}/validate")
 def validate(aid: str, user=Depends(sec.current_user), db=Depends(get_db)):
     a = sec.get_assessment_or_404(db, aid, user, "edit")
@@ -124,8 +142,26 @@ def validate(aid: str, user=Depends(sec.current_user), db=Depends(get_db)):
                    .order_by(PolicyVersion.published_at.desc()).limit(1))
     if not pv:
         raise HTTPException(503, "Target validation is unavailable. Try again later.")
-    result = validate_target(a.target, a.env, a.ports, {**pv.rules, "version": pv.version}, hosts=a.hosts,
-                             app_env=os.environ.get("APP_ENV", "prod"))
+    recent = db.scalar(select(func.count()).select_from(AuditEvent).where(
+        AuditEvent.actor == user.email, AuditEvent.area == "validation",
+        AuditEvent.at > datetime.now(timezone.utc) - timedelta(minutes=1)))
+    if recent >= VALIDATES_PER_MIN:
+        raise HTTPException(429, "Too many validations. Wait a minute before trying again.")
+    with _running_lock:
+        if user.id in _running:
+            raise HTTPException(409, "A validation is already running for you.")
+        _running.add(user.id)
+    try:
+        snap = (a.target, a.env, a.ports, a.hosts)
+        policy = {**pv.rules, "version": pv.version}
+        db.commit()  # release the connection before any network I/O
+        result = validate_target(*snap[:3], policy, hosts=snap[3], app_env=os.environ.get("APP_ENV", "prod"))
+    finally:
+        with _running_lock:
+            _running.discard(user.id)
+    a = db.scalar(select(Assessment).where(Assessment.id == a.id).with_for_update())
+    if (a.target, a.env, a.ports, a.hosts) != snap:
+        raise HTTPException(409, "The assessment changed while it was being validated. Validate again.")
     a.validation, a.policy_version = result, pv.version
     a.status = STATUS[result["outcome"]]
     a.approval = {"state": "pending", "note": None, "by": None, "at": None, "self": False} \
