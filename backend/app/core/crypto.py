@@ -1,5 +1,5 @@
 """Sealed credentials: ephemeral X25519 + HKDF-SHA256 + AES-GCM. The API holds only the public key; the
-private key is read lazily and only in the worker (API_PROCESS is set by the API lifespan)."""
+private key is read lazily and only in the worker (only the worker calls enable_decryption)."""
 import os
 
 from cryptography.hazmat.primitives import hashes
@@ -11,7 +11,7 @@ from cryptography.hazmat.primitives.serialization import (Encoding, PublicFormat
 
 from app.core.startup import pem_from_env
 
-API_PROCESS = False
+_ENABLED = False  # default-deny: only the worker entrypoint opts in
 _INFO = b"pa-credential-v1"
 
 
@@ -28,9 +28,14 @@ def seal(plaintext: str) -> bytes:
     return eph_pub + nonce + ct
 
 
+def enable_decryption():
+    global _ENABLED
+    _ENABLED = True
+
+
 def open_sealed(blob: bytes) -> str:
     raw = os.environ.get("CREDENTIALS_PRIVATE_KEY")
-    if API_PROCESS or not raw:
+    if not _ENABLED or not raw:
         raise RuntimeError("This process cannot open sealed credentials.")
     priv = load_pem_private_key(pem_from_env(raw), None)
     eph_pub, nonce, ct = bytes(blob[:32]), bytes(blob[32:44]), bytes(blob[44:])

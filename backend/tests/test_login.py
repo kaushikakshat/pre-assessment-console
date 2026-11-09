@@ -67,3 +67,42 @@ def test_login_carries_hidden_csrf_field(single):
 def test_login_unreachable(single):
     srv, _ = single
     assert run(srv, setup(srv, login_url="http://other.test/login")).reason == "Could not reach the login page"
+
+
+def test_login_page_echoing_marker_is_not_success(single):
+    assert not run(single[0], setup(single[0]), user="echo").ok
+
+
+def test_logged_out_indicator_fails(single):
+    assert not run(single[0], setup(single[0], logged_out_indicator="Welcome")).ok
+
+
+def test_url_indicator_matches_path_not_host(single):
+    srv, _ = single
+    assert not run(srv, setup(srv, logged_in_indicator="url:portal")).ok
+    assert not run(srv, setup(srv, logged_in_indicator="url:")).ok
+
+
+def test_two_step_wrong_password_sends_nothing_to_otp():
+    srv, h = serve(two_step=True)
+    r = run(srv, setup(srv, style="two-step"), pw="wrong")
+    assert r.reason == "The password step was not accepted"
+    assert all(f["_path"] != "/otp" for f in h.seen)
+    srv.shutdown()
+
+
+def test_lock_wording_and_bad_location():
+    from app.targets.login import LOCKED
+    assert not LOCKED.search("unlocked blocked clocked") and LOCKED.search("Your account is locked")
+
+
+def test_login_hides_secrets_in_repr(single):
+    r = run(single[0], setup(single[0]))
+    assert "good" not in repr(r) and CODE not in repr(setup(single[0]))
+
+
+def test_login_never_logs_values(single, caplog):
+    import logging
+    caplog.set_level(logging.DEBUG)
+    run(single[0], setup(single[0]))
+    assert "Secret!pw" not in caplog.text and CODE not in caplog.text and "alice" not in caplog.text

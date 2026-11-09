@@ -33,12 +33,14 @@ class Portal(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         f = {k: v[0] for k, v in parse_qs(self.rfile.read(int(self.headers["Content-Length"])).decode()).items()}
-        self.seen.append(f)
+        self.seen.append({**f, "_path": self.path})
         if f.get("csrf") != CSRF:
             return self._send(403, "bad csrf")
         if self.path == "/login":
             if f.get("u") == "locked":
                 return self._send(423, "Account locked")
+            if f.get("u") == "echo":
+                return self._send(200, "Please sign in. Sign out")
             if f.get("u") != "alice" or f.get("p") != "Secret!pw":
                 return self._send(200, "Please sign in. Wrong password")
             return self._send(302, "", [("Location", "/otp" if self.two_step else "/home"), ("Set-Cookie", "sid=good; Path=/")])

@@ -111,16 +111,16 @@ class SafeClient:
                     truncated = True
                     del body[MAX_BYTES:]
                     break
-            data = bytes(body)
+            out = bytes(body)
             if r.headers.get("content-encoding", "identity").lower() in ("gzip", "x-gzip", "deflate"):
                 try:
                     d = zlib.decompressobj(47)
-                    data = d.decompress(data, MAX_BYTES + 1)
-                    if len(data) > MAX_BYTES or d.unconsumed_tail:
-                        data, truncated = data[:MAX_BYTES], True
+                    out = d.decompress(out, MAX_BYTES + 1)
+                    if len(out) > MAX_BYTES or d.unconsumed_tail:
+                        out, truncated = out[:MAX_BYTES], True
                 except zlib.error:
                     pass  # leave undecodable bodies raw
-            return Response(r.status_code, r.headers, data, truncated)
+            return Response(r.status_code, r.headers, out, truncated)
 
     def get(self, url, **kw):
         return self.request("GET", url, **kw)

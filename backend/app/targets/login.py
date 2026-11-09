@@ -1,7 +1,7 @@
 """Form-login engine (single form, or password form then OTP page). All traffic goes through SafeClient.
 Never logs or returns submitted values."""
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from urllib.parse import urlencode
 
@@ -9,7 +9,7 @@ import httpx
 
 from app.targets.safe_http import BlockedAddress, RequestCapExceeded, SafeClient, ScopeError
 
-LOCKED = re.compile(r"(?i)locked|too many attempts")
+LOCKED = re.compile(r"(?i)\b(account|user)\s+(is\s+)?locked\b|too many (failed )?attempts")
 MAX_HOPS = 4
 
 
@@ -24,14 +24,14 @@ class LoginSetup:
     otp_url: str | None = None
     otp_field: str | None = None
     logged_out_indicator: str | None = None
-    bypass_code: str | None = None
+    bypass_code: str | None = field(default=None, repr=False)
 
 
 @dataclass
 class LoginResult:
     ok: bool
     reason: str
-    cookies: dict[str, str]
+    cookies: dict[str, str] = field(repr=False)
 
 
 class _Hidden(HTMLParser):
@@ -70,12 +70,32 @@ def _fetch(client, method, url, jar, deadline, form=None):
     raise OSError("too many redirects")
 
 
-def _signed_in(setup, r, url) -> bool:
+def _same(a: str, b: str | None) -> bool:
+    return bool(b) and httpx.URL(a).copy_with(fragment=None) == httpx.URL(b).copy_with(fragment=None)
+
+
+def _signed_in(setup, r, url, entry) -> bool:
+    """Never a false success: a good status, off the form page, no logged-out marker, and the marker present."""
+    if r.status_code >= 400 or _same(url, entry):
+        return False
+    if setup.logged_out_indicator and setup.logged_out_indicator in r.text:
+        return False
     ind = setup.logged_in_indicator
     try:
-        return bool(re.search(ind[4:], url)) if ind.startswith("url:") else ind in r.text
+        if ind.startswith("url:"):
+            u = httpx.URL(url)  # path and query only, never the host
+            return bool(ind[4:]) and bool(re.search(ind[4:], u.raw_path.decode("ascii", "replace")))
+        return bool(ind) and ind in r.text
     except re.error:
         return False
+
+
+def _rejected(setup, r, url, entry) -> bool:
+    return r.status_code >= 400 or _same(url, entry) or bool(setup.logged_out_indicator and setup.logged_out_indicator in r.text)
+
+
+def _locked(r) -> bool:
+    return r.status_code == 423 or bool(LOCKED.search(r.text))
 
 
 def perform_login(client: SafeClient, setup: LoginSetup, username: str, password: str, deadline: float) -> LoginResult:
@@ -90,19 +110,21 @@ def perform_login(client: SafeClient, setup: LoginSetup, username: str, password
         if not two and setup.code_field and setup.bypass_code:
             form[setup.code_field] = setup.bypass_code
         r, url = _fetch(client, "POST", setup.login_url, jar, deadline, form)
-        if r.status_code == 423 or LOCKED.search(r.text):
-            return fail("Account appears locked")
         if not two:
-            return LoginResult(True, "Signed in", jar) if _signed_in(setup, r, url) \
-                else fail("The login page did not show the signed-in marker")
+            if _signed_in(setup, r, url, setup.login_url):
+                return LoginResult(True, "Signed in", jar)
+            return fail("Account appears locked" if _locked(r) else "The login page did not show the signed-in marker")
+        if _locked(r):
+            return fail("Account appears locked")
+        if _rejected(setup, r, url, setup.login_url):
+            return fail("The password step was not accepted")
         if not (setup.bypass_code and setup.otp_url and setup.otp_field):
             return fail("The OTP step did not accept the code")
         r, _ = _fetch(client, "GET", setup.otp_url, jar, deadline)
         form = {**_hidden(r.text), setup.otp_field: setup.bypass_code}
         r, url = _fetch(client, "POST", setup.otp_url, jar, deadline, form)
-        if _signed_in(setup, r, url):
+        if _signed_in(setup, r, url, setup.otp_url):
             return LoginResult(True, "Signed in", jar)
-        return fail("Account appears locked" if r.status_code == 423 or LOCKED.search(r.text)
-                    else "The OTP step did not accept the code")
-    except (httpx.HTTPError, OSError, BlockedAddress, ScopeError, TimeoutError, RequestCapExceeded):
+        return fail("Account appears locked" if _locked(r) else "The OTP step did not accept the code")
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError, OSError, BlockedAddress, ScopeError, TimeoutError, RequestCapExceeded):
         return fail("Could not reach the login page")

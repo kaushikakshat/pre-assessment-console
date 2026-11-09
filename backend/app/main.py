@@ -5,7 +5,6 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from app.core import crypto
 from app.core.startup import validate_env
 from app.api import admin, admin_users, assessments, auth, catalog, dashboard, findings, jobs, signin
 
@@ -13,7 +12,6 @@ from app.api import admin, admin_users, assessments, auth, catalog, dashboard, f
 @asynccontextmanager
 async def lifespan(_):
     validate_env()
-    crypto.API_PROCESS = True  # the API only encrypts; open_sealed refuses from here on
     yield
 
 

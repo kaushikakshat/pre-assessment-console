@@ -1,5 +1,6 @@
 """Owner-only sign-in setup and test accounts. Passwords and the bypass code are sealed with the public key
 and are write-only: no response, audit row or log ever carries them (the API cannot decrypt)."""
+from datetime import datetime, timedelta, timezone
 import os
 import re
 import socket
@@ -14,16 +15,19 @@ from app.core import crypto
 from app.core import security as sec
 from app.core.audit import record
 from app.db import get_db
-from app.models import Credential, LoginSetup as SetupRow, PolicyVersion
+from app.api.jobs import BLOCKED
+from app.models import AuditEvent, Credential, LoginSetup as SetupRow, PolicyVersion, SchedulerConfig
 from app.targets import ipguard
 from app.targets.login import LoginSetup, perform_login
 from app.targets.safe_http import SafeClient
-from app.targets.validate import _internal, first_rule
+from app.targets.validate import _internal, first_rule, parse_ports
 
 router = APIRouter(prefix="/assessments")
 MAX_ACCOUNTS = 10
 TEST_SECONDS = 20
+TEST_GAP = timedelta(seconds=30)
 STYLES = ("single", "two-step")
+LOCKED_REASON = "Account appears locked"
 OUT_OF_SCOPE = "The login page must be on an in-scope host."
 
 
@@ -69,16 +73,26 @@ def make_client(db, a, hosts: set[str]) -> SafeClient:
     return SafeClient(hosts, internal, max_requests=10)
 
 
-def _url_host(u: str) -> str | None:
+def _url_ok(a, u: str) -> str | None:
+    """None when the URL is on an in-scope host and permitted port and not an excluded path, else the message."""
     try:
         x = httpx.URL(u)
-        return ipguard.normalize_host(x.host) if x.scheme in ("http", "https") and x.host else None
+        if x.scheme not in ("http", "https") or not x.host or len(u) > 2000:
+            return "Enter a full http or https URL."
+        if ipguard.normalize_host(x.host) not in scope_hosts(a):
+            return OUT_OF_SCOPE
+        if (x.port or (443 if x.scheme == "https" else 80)) not in parse_ports(a.ports):
+            return "The login page must use a permitted port."
+        path = x.path or "/"
+        if any(path.startswith(p.rstrip("*")) for p in re.split(r"[,\s]+", a.exclusions) if p.startswith("/")):
+            return "The login page is in an excluded path."
     except Exception:
-        return None
+        return "Enter a full http or https URL."
+    return None
 
 
 def _hint(u: str) -> str:
-    return u[:min(2, len(u) - 1)] + "•••"
+    return "•••" if len(u) <= 4 else u[:2] + "•••"
 
 
 def _acct(c: Credential) -> dict:
@@ -114,7 +128,7 @@ def get_signin(aid: str, user=Depends(sec.current_user), db=Depends(get_db)):
 @router.put("/{aid}/signin")
 def put_signin(aid: str, body: SetupIn, user=Depends(sec.current_user), db=Depends(get_db)):
     a = _owned(db, aid, user)
-    err, hosts = {}, scope_hosts(a)
+    err = {}
     if body.style not in STYLES:
         err["style"] = "Choose a sign-in style."
     for f, msg in (("username_field", "Enter the username field name."), ("password_field", "Enter the password field name."),
@@ -123,17 +137,17 @@ def put_signin(aid: str, body: SetupIn, user=Depends(sec.current_user), db=Depen
             err[f] = msg
     urls = [("login_url", body.login_url)] + ([("otp_url", body.otp_url or "")] if body.style == "two-step" else [])
     for f, u in urls:
-        if len(u) > 2000 or _url_host(u) is None:
-            err[f] = "Enter a full http or https URL."
-        elif _url_host(u) not in hosts:
-            err[f] = OUT_OF_SCOPE
+        if (msg := _url_ok(a, u)):
+            err[f] = msg
     if body.style == "two-step" and not (body.otp_field or "").strip():
         err["otp_field"] = "Enter the code field name."
     if body.logged_in_indicator.startswith("url:"):
         try:
+            if not body.logged_in_indicator[4:].strip():
+                raise re.error("empty")
             re.compile(body.logged_in_indicator[4:])
         except re.error:
-            err["logged_in_indicator"] = "Enter a valid pattern after url:."
+            err["logged_in_indicator"] = "Enter a pattern after url:, such as /dashboard."
     if len(body.bypass_code or "") > 64:
         err["bypass_code"] = "Too long."
     if err:
@@ -161,7 +175,7 @@ def put_signin(aid: str, body: SetupIn, user=Depends(sec.current_user), db=Depen
     return out
 
 
-def _check_account(b: AccountIn, a, replacing: bool):
+def _check_account(b: AccountIn, replacing: bool):
     err = {}
     if not (replacing and not b.role_label.strip()) and not 1 <= len(b.role_label.strip()) <= 60:
         err["role_label"] = "Enter a role label of 1 to 60 characters."
@@ -169,24 +183,41 @@ def _check_account(b: AccountIn, a, replacing: bool):
         err["username"] = "Enter the username."
     if not 1 <= len(b.password) <= 200:
         err["password"] = "Enter the password."
+    if len(b.bypass_code or "") > 64:
+        err["bypass_code"] = "Too long."
     if b.test and not b.authorized:
         err["authorized"] = "Confirm you are authorized to test this target."
     if err:
         raise HTTPException(422, {"fields": err})
 
 
-def _run_test(db, a, b: AccountIn) -> str | None:
-    """-> reason from perform_login, or None when not requested. Plaintext lives only in this call."""
-    if not b.test:
-        return None
+def _begin_test(db, user, a, b: AccountIn, c: Credential | None):
+    """Gates and rate limits, then records the attempt and commits so no transaction is held during network I/O."""
+    cfg = db.get(SchedulerConfig, 1)
+    if cfg and (cfg.emergency or cfg.paused):
+        raise HTTPException(503, BLOCKED["emergency" if cfg.emergency else "paused"])
     v = a.validation or {}
     if not (v.get("outcome") == "allowed" or (v.get("outcome") == "approval" and (a.approval or {}).get("state") == "approved")):
         raise HTTPException(409, "Validate this target, and get approval if it needs it, before testing a sign-in.")
     s = db.get(SetupRow, a.id)
     if not s:
         raise HTTPException(409, "Save the sign-in setup before testing an account.")
-    setup = LoginSetup(s.style, s.login_url, s.username_field, s.password_field, s.logged_in_indicator,
-                       s.code_field, s.otp_url, s.otp_field, s.logged_out_indicator, b.bypass_code or None)
+    if c is not None and db.scalar(select(func.count()).select_from(AuditEvent).where(
+            AuditEvent.object == a.display_id, AuditEvent.action == "test-locked",
+            AuditEvent.detail.like(f"%[{c.display_id}]"), AuditEvent.at >= c.updated_at)):
+        raise HTTPException(409, "This account appears locked. Replace it after it is unlocked.")
+    now = datetime.now(timezone.utc)
+    n = lambda since: db.scalar(select(func.count()).select_from(AuditEvent).where(  # noqa: E731
+        AuditEvent.object == a.display_id, AuditEvent.action == "test-login", AuditEvent.at > now - since))
+    if n(TEST_GAP) >= 1 or n(timedelta(hours=1)) >= 5:
+        raise HTTPException(429, "Wait before testing sign-in again.")
+    record(db, user.email, "signin", "test-login", a.display_id, "success", "Sign-in test started")
+    db.commit()
+    return LoginSetup(s.style, s.login_url, s.username_field, s.password_field, s.logged_in_indicator,
+                      s.code_field, s.otp_url, s.otp_field, s.logged_out_indicator, b.bypass_code or None)
+
+
+def _run_test(db, a, setup, b: AccountIn) -> str:
     with make_client(db, a, scope_hosts(a)) as client:
         return perform_login(client, setup, b.username, b.password, time.monotonic() + TEST_SECONDS).reason
 
@@ -198,20 +229,33 @@ def _store(c: Credential, b: AccountIn, reason: str | None):
         c.last_test, c.last_tested_at = ("ok" if reason == "Signed in" else "failed"), func.now()
 
 
+def _tested(reason):
+    return "not tested" if reason is None else "test: ok" if reason == "Signed in" else "test: failed"
+
+
 @router.post("/{aid}/accounts", status_code=201)
 def add_account(aid: str, body: AccountIn, user=Depends(sec.current_user), db=Depends(get_db)):
     a = _owned(db, aid, user)
+    _check_account(body, False)
     db.execute(select(func.pg_advisory_xact_lock(a.id)))
-    _check_account(body, a, False)
     if len(_live(db, a)) >= MAX_ACCOUNTS:
         raise HTTPException(409, f"You can add up to {MAX_ACCOUNTS} test accounts.")
-    reason = _run_test(db, a, body)
+    reason = None
+    if body.test:
+        setup = _begin_test(db, user, a, body, None)  # commits, releasing the lock
+        reason = _run_test(db, a, setup, body)
+        db.execute(select(func.pg_advisory_xact_lock(a.id)))
+        if len(_live(db, a)) >= MAX_ACCOUNTS:
+            raise HTTPException(409, f"You can add up to {MAX_ACCOUNTS} test accounts.")
     c = Credential(assessment_id=a.id, role_label=body.role_label.strip(), username_enc=b"", password_enc=b"")
     _store(c, body, reason)
     db.add(c)
     db.flush()
     db.refresh(c)
-    record(db, user.email, "signin", "add-account", a.display_id, "success", f"Test account added: {c.role_label}")
+    if reason == LOCKED_REASON:
+        record(db, user.email, "signin", "test-locked", a.display_id, "blocked", f"Account appears locked [{c.display_id}]")
+    record(db, user.email, "signin", "add-account", a.display_id, "success",
+           f"Test account added: {c.role_label} ({_tested(reason)})")
     out = {**_acct(c), "test_result": reason}
     db.commit()
     return out
@@ -228,15 +272,24 @@ def _get_account(db, a, cid) -> Credential:
 @router.put("/{aid}/accounts/{cid}")
 def replace_account(aid: str, cid: str, body: AccountIn, user=Depends(sec.current_user), db=Depends(get_db)):
     a = _owned(db, aid, user)
+    db.execute(select(func.pg_advisory_xact_lock(a.id)))
     c = _get_account(db, a, cid)
-    _check_account(body, a, True)
-    reason = _run_test(db, a, body)
+    _check_account(body, True)
+    reason = None
+    if body.test:
+        setup = _begin_test(db, user, a, body, c)
+        reason = _run_test(db, a, setup, body)
+        db.execute(select(func.pg_advisory_xact_lock(a.id)))
+        c = _get_account(db, a, cid)
     if body.role_label.strip():
         c.role_label = body.role_label.strip()
     _store(c, body, reason)
-    record(db, user.email, "signin", "update-account", a.display_id, "success", f"Test account updated: {c.role_label}")
     db.flush()
     db.refresh(c)
+    if reason == LOCKED_REASON:
+        record(db, user.email, "signin", "test-locked", a.display_id, "blocked", f"Account appears locked [{c.display_id}]")
+    record(db, user.email, "signin", "update-account", a.display_id, "success",
+           f"Test account updated: {c.role_label} ({_tested(reason)})")
     out = {**_acct(c), "test_result": reason}
     db.commit()
     return out
