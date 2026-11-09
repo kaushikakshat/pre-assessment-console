@@ -1,7 +1,7 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, ForeignKey, Identity, Integer, Sequence, Text, text
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import BigInteger, Boolean, ForeignKey, Identity, Integer, Sequence, Text, UniqueConstraint, text
+from sqlalchemy.dialects.postgresql import BYTEA, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import DateTime
 
@@ -106,6 +106,9 @@ class Job(Base):
     resume_of: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"))
     review: Mapped[str | None] = mapped_column(Text)
     cancel_requested: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    wordlists: Mapped[list] = mapped_column(JSONB, server_default="[]")
+    retest_of: Mapped[list | None] = mapped_column(JSONB)
+    credential_ids: Mapped[list] = mapped_column(JSONB, server_default="[]")
 
 
 class ModuleRun(Base):
@@ -118,6 +121,7 @@ class ModuleRun(Base):
     started_at: Mapped[datetime | None] = _ts()
     ended_at: Mapped[datetime | None] = _ts()
     tool_version: Mapped[str | None] = mapped_column(Text)
+    untested: Mapped[int] = mapped_column(Integer, server_default="0")
 
 
 class Finding(Base):
@@ -144,6 +148,7 @@ class Finding(Base):
     last_seen_at: Mapped[datetime] = _ts(server_default=NOW)
     history: Mapped[list] = mapped_column(JSONB, server_default="[]")
     comments: Mapped[list] = mapped_column(JSONB, server_default="[]")
+    credential_id: Mapped[int | None] = mapped_column(Integer)
 
 
 class Worker(Base):
@@ -153,6 +158,7 @@ class Worker(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, server_default="true")
     last_heartbeat_at: Mapped[datetime | None] = _ts()
     current_job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"))
+    engine_ok: Mapped[bool] = mapped_column(Boolean, server_default="false")
 
 
 class SchedulerConfig(Base):
@@ -166,6 +172,10 @@ class SchedulerConfig(Base):
     paused: Mapped[bool] = mapped_column(Boolean, server_default="false")
     emergency: Mapped[bool] = mapped_column(Boolean, server_default="false")
     reason: Mapped[str | None] = mapped_column(Text)
+    engine_slots: Mapped[int] = mapped_column(Integer, server_default="1")
+    profile_limits: Mapped[dict] = mapped_column(JSONB, server_default=text(
+        """'{"pre": {"budget_min": 30, "request_cap": 5000, "rate_per_s": 10}, """
+        """"deep": {"budget_min": 180, "request_cap": 50000, "rate_per_s": 10}}'::jsonb"""))
 
 
 class AuditEvent(Base):
@@ -179,3 +189,60 @@ class AuditEvent(Base):
     outcome: Mapped[str] = mapped_column(Text)
     detail: Mapped[str] = mapped_column(Text)
     policy_version: Mapped[str | None] = mapped_column(Text)
+
+
+class LoginSetup(Base):
+    __tablename__ = "login_setups"
+    assessment_id: Mapped[int] = mapped_column(ForeignKey("assessments.id", ondelete="CASCADE"), primary_key=True)
+    style: Mapped[str] = mapped_column(Text)  # single | two-step
+    login_url: Mapped[str] = mapped_column(Text)
+    username_field: Mapped[str] = mapped_column(Text)
+    password_field: Mapped[str] = mapped_column(Text)
+    code_field: Mapped[str | None] = mapped_column(Text)
+    otp_url: Mapped[str | None] = mapped_column(Text)
+    otp_field: Mapped[str | None] = mapped_column(Text)
+    bypass_code_enc: Mapped[bytes | None] = mapped_column(BYTEA)
+    logged_in_indicator: Mapped[str] = mapped_column(Text)
+    logged_out_indicator: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = _ts(server_default=NOW)
+
+
+class Credential(Base):
+    __tablename__ = "credentials"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    display_id: Mapped[str] = mapped_column(Text, unique=True, server_default=_display("credential_display_seq", "C-", 4))
+    assessment_id: Mapped[int] = mapped_column(ForeignKey("assessments.id", ondelete="CASCADE"), index=True)
+    role_label: Mapped[str] = mapped_column(Text)
+    username_enc: Mapped[bytes] = mapped_column(BYTEA)
+    password_enc: Mapped[bytes] = mapped_column(BYTEA)
+    last_test: Mapped[str | None] = mapped_column(Text)  # ok | failed
+    last_tested_at: Mapped[datetime | None] = _ts()
+    created_at: Mapped[datetime] = _ts(server_default=NOW)
+    updated_at: Mapped[datetime] = _ts(server_default=NOW)
+    deleted_at: Mapped[datetime | None] = _ts()
+
+
+class Wordlist(Base):
+    __tablename__ = "wordlists"
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    category: Mapped[str] = mapped_column(Text)  # discovery | fuzzing
+    label: Mapped[str] = mapped_column(Text)
+    lines: Mapped[int] = mapped_column(Integer)
+    enabled: Mapped[bool] = mapped_column(Boolean, server_default="true")
+
+
+class Report(Base):
+    __tablename__ = "reports"
+    __table_args__ = (UniqueConstraint("assessment_id", "type", "version"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    display_id: Mapped[str] = mapped_column(Text, unique=True, server_default=_display("report_display_seq", "R-", 4))
+    assessment_id: Mapped[int] = mapped_column(ForeignKey("assessments.id"))
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"), index=True)
+    type: Mapped[str] = mapped_column(Text)  # management | technical
+    version: Mapped[int] = mapped_column(Integer)
+    state: Mapped[str] = mapped_column(Text, server_default="generating")  # generating | ready | failed
+    model: Mapped[dict | None] = mapped_column(JSONB)
+    pdf_path: Mapped[str | None] = mapped_column(Text)
+    requested_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = _ts(server_default=NOW)
+    error: Mapped[str | None] = mapped_column(Text)
