@@ -218,7 +218,10 @@ def _begin_test(db, user, a, b: AccountIn, c: Credential | None):
 
 
 def _run_test(db, a, setup, b: AccountIn) -> str:
-    with make_client(db, a, scope_hosts(a)) as client:
+    hosts = scope_hosts(a)
+    client = make_client(db, a, hosts)  # DB reads done; end the transaction before network I/O
+    db.commit()
+    with client:
         return perform_login(client, setup, b.username, b.password, time.monotonic() + TEST_SECONDS).reason
 
 

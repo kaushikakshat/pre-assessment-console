@@ -91,7 +91,7 @@ def _signed_in(setup, r, url, entry) -> bool:
 
 
 def _rejected(setup, r, url, entry) -> bool:
-    return r.status_code >= 400 or _same(url, entry) or bool(setup.logged_out_indicator and setup.logged_out_indicator in r.text)
+    return r.status_code >= 400 or _same(url, entry)  # logged_out_indicator is for the final check only
 
 
 def _locked(r) -> bool:

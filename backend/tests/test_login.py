@@ -91,9 +91,19 @@ def test_two_step_wrong_password_sends_nothing_to_otp():
     srv.shutdown()
 
 
-def test_lock_wording_and_bad_location():
+def test_lock_wording():
     from app.targets.login import LOCKED
     assert not LOCKED.search("unlocked blocked clocked") and LOCKED.search("Your account is locked")
+
+
+def test_invalid_location_is_a_failed_login(single):
+    assert run(single[0], setup(single[0]), user="badloc").reason == "Could not reach the login page"
+
+
+def test_two_step_otp_page_with_logged_out_text_still_signs_in():
+    srv, _ = serve(two_step=True, otp_text="You are signed-out-marker")
+    assert run(srv, setup(srv, style="two-step", logged_out_indicator="signed-out-marker")).reason == "Signed in"
+    srv.shutdown()
 
 
 def test_login_hides_secrets_in_repr(single):

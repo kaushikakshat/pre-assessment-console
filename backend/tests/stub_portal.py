@@ -25,7 +25,7 @@ class Portal(http.server.BaseHTTPRequestHandler):
         if self.path == "/login":
             return self._send(200, f'<form><input type="hidden" name="csrf" value="{CSRF}"><input name="u"></form>')
         if self.path == "/otp":
-            return self._send(200, f'<form><input type="hidden" name="csrf" value="{CSRF}"></form>')
+            return self._send(200, f'<form><input type="hidden" name="csrf" value="{CSRF}"></form>' + getattr(self, "otp_text", ""))
         if self.path == "/home":
             ok = "sid=good" in self.headers.get("Cookie", "")
             return self._send(200, "Welcome. Sign out" if ok else "Please sign in")
@@ -39,6 +39,8 @@ class Portal(http.server.BaseHTTPRequestHandler):
         if self.path == "/login":
             if f.get("u") == "locked":
                 return self._send(423, "Account locked")
+            if f.get("u") == "badloc":
+                return self._send(302, "", [("Location", "http://[::1")])
             if f.get("u") == "echo":
                 return self._send(200, "Please sign in. Sign out")
             if f.get("u") != "alice" or f.get("p") != "Secret!pw":
@@ -51,8 +53,8 @@ class Portal(http.server.BaseHTTPRequestHandler):
         self._send(404)
 
 
-def serve(two_step=False):
-    h = type("H", (Portal,), {"two_step": two_step, "seen": []})
+def serve(two_step=False, otp_text=""):
+    h = type("H", (Portal,), {"two_step": two_step, "seen": [], "otp_text": otp_text})
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), h)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv, h
