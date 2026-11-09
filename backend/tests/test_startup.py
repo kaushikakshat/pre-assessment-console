@@ -41,7 +41,21 @@ def test_gen_credential_keys_roundtrip(monkeypatch, capsys):
 
 
 def test_vendor_manifest_excludes_passwords():
+    import re
     m = json.loads((pathlib.Path(__file__).parents[1] / "vendor" / "manifest.json").read_text())
-    paths = m["seclists"]["paths"]
-    assert paths == ["Discovery", "Fuzzing"]
-    assert not [p for p in paths if p.startswith(("Passwords/", "Usernames/"))]
+    assert m["seclists"]["paths"] == ["Discovery", "Fuzzing"]
+    bad = re.compile(m["seclists"]["exclude"])  # same regex fetch.sh applies to every relative path
+    for p in ("Passwords/x", "Usernames/x", "Discovery/Web-Content/default-passwords.txt", "Fuzzing/user-agents.txt", "Fuzzing/Credentials/a.txt"):
+        assert bad.search(p), p
+    for p in ("Discovery/Web-Content/common.txt", "Fuzzing/XSS/xss.txt"):
+        assert not bad.search(p), p
+
+
+def test_clean_env_drops_secrets(monkeypatch):
+    from app.worker.subproc import clean_env
+    for k in ("CREDENTIALS_PRIVATE_KEY", "ZAP_API_KEY", "EGRESS_TOKEN", "SECRET_KEY", "DATABASE_URL"):
+        monkeypatch.setenv(k, "x" * 40)
+    monkeypatch.setenv("PATH_MARK", "keep")
+    env = clean_env()
+    assert env["PATH_MARK"] == "keep" and "PATH" in env
+    assert not {"CREDENTIALS_PRIVATE_KEY", "CREDENTIALS_PUBLIC_KEY", "ZAP_API_KEY", "EGRESS_TOKEN", "SECRET_KEY", "DATABASE_URL"} & env.keys()

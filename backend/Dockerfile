@@ -1,11 +1,11 @@
-FROM python:3.12-slim AS vendor
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS vendor
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
  && apt-get clean
 COPY vendor/ /vendor-src/
 RUN sh /vendor-src/fetch.sh /opt/vendor
 RUN chmod -R a+rX /opt/vendor  # git temp dirs are 0700; scanner user must read
 
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
 # nmap; testssl.sh deps (bash openssl procps bsdextrautils dnsutils); WeasyPrint libs + fontconfig
 RUN apt-get update && apt-get install -y --no-install-recommends nmap bash openssl procps bsdextrautils bind9-dnsutils \
       libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0 fontconfig \

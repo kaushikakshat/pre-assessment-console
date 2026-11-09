@@ -52,14 +52,15 @@ services:
     depends_on:
       migrate: {condition: service_completed_successfully}
 
-  # Guard proxy: the only path out for ZAP. No published ports; control API (3129) is reachable only from worker.
+  # Guard proxy: the only path out for ZAP. No published ports. On `engine` (zap, worker) and `outbound` (internet) only,
+  # never `default`, so api/db/web cannot reach it. Control API (3129) is token-gated: zap can reach it on `engine` but has no token.
   egress:
     build: ./backend
     environment:
       APP_ENV: ${APP_ENV:-prod}
       EGRESS_TOKEN: ${EGRESS_TOKEN:?set in .env}
     command: python -m app.egress
-    networks: [default, engine]
+    networks: [outbound, engine]
     mem_limit: 128m
 
   zap:
@@ -98,8 +99,10 @@ services:
   testtarget:
     build: ./dev/testtarget
     profiles: [dev]
+    networks: [default, outbound]  # outbound so the dev internal-target rule is reachable through egress
 
 networks:
+  outbound: {}  # egress-only route to the internet and testtarget
   engine:
     internal: true  # no route to the host or internet; egress is the only bridge
 

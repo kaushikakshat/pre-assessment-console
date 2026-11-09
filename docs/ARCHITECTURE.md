@@ -14,7 +14,7 @@
 | `api` | Auth (argon2 + TOTP, sessions), permFor/can authorization, target validation, assessments/jobs/findings APIs, audit |
 | `worker` | Claims jobs, runs modules, writes redacted findings, heartbeats (stub until task B4) |
 | `zap` | OWASP ZAP daemon (compose profile `dast`, `-Xmx1g`); on internal-only `engine` network, egress only via `egress` |
-| `egress` | Guard proxy (`python -m app.egress`): ipguard + scope on every connection; control API on 3129 (token), proxy on 3128; on `engine` + `default`, no published ports |
+| `egress` | Guard proxy (`python -m app.egress`): ipguard + scope on every connection; proxy on 3128, control API on 3129 (token-gated; zap can reach it on `engine` but has no token); on `engine` + `outbound` only (not `default`), so api/db/web cannot reach it; no published ports |
 | `db` | System of record, queue, audit |
 | `testtarget` | Intentionally weak nginx demo target (dev only; compose profile `dev`) |
 

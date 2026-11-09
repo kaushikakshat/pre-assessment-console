@@ -1,4 +1,6 @@
 import subprocess
+
+from app.worker.subproc import clean_env
 import xml.etree.ElementTree as ET
 
 from .base import REFS, FindingDraft, ModuleResult, location
@@ -8,7 +10,7 @@ def run(ctx) -> ModuleResult:
     ip = ctx.safe_ip()  # only an address that passed the guard is ever handed to nmap
     cmd = ["nmap", "-sT", "-Pn", "-n", "--top-ports", "100", "--host-timeout", "150s", "-oX", "-", ip]
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=max(1, min(175, ctx.remaining())), shell=False)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=max(1, min(175, ctx.remaining())), shell=False, env=clean_env())
     except subprocess.TimeoutExpired:
         return ModuleResult("inconclusive", "The port check ran out of time before it finished.")
     except FileNotFoundError:
