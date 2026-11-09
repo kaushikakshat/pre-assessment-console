@@ -24,11 +24,11 @@ def sched():
         c.execute(text("DELETE FROM jobs"))
         c.execute(text("DELETE FROM workers"))
         c.execute(text("UPDATE scheduler_config SET concurrency_limit=1, aging_enabled=true, aging_minutes=15, "
-                       "queue_cap=50, per_user_quota=5, paused=false, emergency=false"))
+                       "queue_cap=50, per_user_quota=5, paused=false, emergency=false, engine_slots=1"))
     yield
     with engine.begin() as c:
         c.execute(text("UPDATE scheduler_config SET concurrency_limit=1, paused=false, emergency=false, "
-                       "queue_cap=50, per_user_quota=5, aging_enabled=true, aging_minutes=15"))
+                       "queue_cap=50, per_user_quota=5, aging_enabled=true, aging_minutes=15, engine_slots=1"))
 
 
 def cfg(**kw):
@@ -36,10 +36,10 @@ def cfg(**kw):
         db.execute(update(SchedulerConfig).values(**kw))
 
 
-def workers(n, enabled=True):
+def workers(n, enabled=True, engine_ok=False):
     names = [f"w{next(_n)}" for _ in range(n)]
     with SessionLocal() as db, db.begin():
-        db.add_all(Worker(name=w, enabled=enabled, last_heartbeat_at=datetime.now(timezone.utc)) for w in names)
+        db.add_all(Worker(name=w, enabled=enabled, engine_ok=engine_ok, last_heartbeat_at=datetime.now(timezone.utc)) for w in names)
     return names
 
 
@@ -200,3 +200,17 @@ def test_heartbeat_extends_only_own_lease_and_position(sched):
         assert admission.heartbeat(db, w1, j1) and not admission.heartbeat(db, w2, j1)
         assert admission.queue_position(db, db.get(Job, j3)) == 2 and admission.queue_position(db, db.get(Job, j1)) is None
     assert admission.wait_estimate(2) == {"lo_min": 10, "hi_min": 30} and admission.wait_estimate(None) is None
+
+
+def test_engine_slot_blocks_second_engine_job_not_quick(sched):
+    cfg(concurrency_limit=3)
+    ws, (aid, uid) = workers(3), make_assessment()
+    first = add_job(aid, uid, modules=("reach", "crawl"))
+    second = add_job(aid, uid, modules=("reach", "dast"))
+    quick = add_job(aid, uid)
+    assert claim(ws[0]) == first
+    assert claim(ws[1]) == quick  # skips the engine job ahead of it
+    assert claim(ws[2]) is None and state_of(second) == "queued"
+    cfg(engine_slots=2)
+    assert claim(ws[2]) == second
+    assert admission.uses_engine(["reach", "api"]) and not admission.uses_engine(["reach", "headers"])

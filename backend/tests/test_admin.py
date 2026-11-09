@@ -200,3 +200,38 @@ def test_audit_filters_and_csv(sched):
     assert r.headers["content-type"].startswith("text/csv") and r.text.splitlines()[0].startswith("id,at,actor")
     assert "audit export" not in r.text
     assert adm.get("/api/admin/audit?q=audit export").json()[0]["detail"].startswith("Exported ")
+
+
+def test_capacity_engine_slots_audited(sched):
+    adm = signin(make_user("admin"))
+    body = {"limit": 1, "aging_enabled": True, "aging_minutes": 15, "queue_cap": 50, "per_user_quota": 5, **R}
+    r = adm.put("/api/admin/capacity", json={**body, "engine_slots": 2}).json()
+    assert r["config"]["engine_slots"] == 2 and "engine_slots 1 -> 2" in r["history"][0]["detail"]
+    assert adm.put("/api/admin/capacity", json={**body, "engine_slots": 4}).status_code == 422
+    adm.put("/api/admin/capacity", json={**body, "engine_slots": 1})
+
+
+def test_profile_limits_range(sched):
+    adm = signin(make_user("admin"))
+    body = {"limit": 1, "aging_enabled": True, "aging_minutes": 15, "queue_cap": 50, "per_user_quota": 5, **R}
+    ok = {"budget_min": 60, "request_cap": 1000, "rate_per_s": 5}
+    for bad in ({"budget_min": 4}, {"budget_min": 601}, {"request_cap": 99}, {"request_cap": 200001},
+                {"rate_per_s": 0}, {"rate_per_s": 51}):
+        assert adm.put("/api/admin/capacity", json={**body, "profile_limits": {"pre": {**ok, **bad}}}).status_code == 422
+    r = adm.put("/api/admin/capacity", json={**body, "profile_limits": {"pre": ok}}).json()
+    assert r["config"]["profile_limits"]["pre"] == ok and r["config"]["profile_limits"]["deep"]["budget_min"] == 180
+    assert "profile_limits" in r["history"][0]["detail"]
+    adm.put("/api/admin/capacity", json={**body, "profile_limits": {"pre": {"budget_min": 30, "request_cap": 5000, "rate_per_s": 10}}})
+
+
+def test_admin_wordlists_audited(sched):
+    adm = signin(make_user("admin"))
+    with engine.begin() as c:
+        c.execute(text("DELETE FROM wordlists"))
+        c.execute(text("INSERT INTO wordlists(key, category, label, lines) VALUES ('Discovery/a.txt','discovery','a',3)"))
+    assert adm.get("/api/admin/wordlists").json()[0]["enabled"] is True
+    assert adm.put("/api/admin/wordlists", json={"key": "Discovery/a.txt", "enabled": False, "reason": " "}).status_code == 422
+    r = adm.put("/api/admin/wordlists", json={"key": "Discovery/a.txt", "enabled": False, "reason": "Too noisy"})
+    assert r.json()["enabled"] is False
+    assert "Discovery/a.txt disabled. Reason: Too noisy" in adm.get("/api/admin/capacity").json()["history"][0]["detail"]
+    assert adm.put("/api/admin/wordlists", json={"key": "x", "enabled": True, "reason": "r"}).status_code == 404

@@ -90,7 +90,10 @@ def test_catalog(users):
     c = users[0].get("/api/catalog").json()
     assert [(p["key"], p["available"]) for p in c["profiles"]] == [("quick", True), ("pre", False), ("deep", False)]
     assert c["profiles"][0]["modules"] == ["reach", "ports", "tls", "headers", "exposed", "finger"]
-    assert {m["key"] for m in c["modules"] if m["available"]} == set(c["profiles"][0]["modules"])
+    # engine down: engine modules stay unavailable, the rest of Pre/Deep is on
+    assert {m["key"] for m in c["modules"] if m["available"]} == set(c["profiles"][2]["modules"]) - {"crawl", "dast", "api"}
+    assert c["profiles"][2]["modules"][6:8] == ["auth", "crawl"] and c["profiles"][2]["modules"][-2:] == ["access", "cval"]
+    assert c["limits"]["deep"]["budget_min"] == 180 and c["advisory_as_of"] and isinstance(c["wordlists"], list)
     assert len(c["modules"]) == 14
 
 

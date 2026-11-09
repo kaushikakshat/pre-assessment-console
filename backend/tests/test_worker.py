@@ -160,3 +160,23 @@ def test_finding_text_fields_are_redacted_and_fingerprint_uses_redacted(setup):
         (f,) = db.query(Finding).filter_by(assessment_id=aid).all()
         blob = f.title + f.description + f.reproduce
         assert "admin@corp.com" not in blob and "abc123" not in blob and "abc.def" not in blob and "[REDACTED]" in f.title
+
+
+def test_wordlist_seed_keeps_admin_flag(tmp_path):
+    from sqlalchemy import text
+    from app.worker.modules import wordlists
+    for rel, body in (("Discovery/Web/a.txt", "x\ny\n"), ("Fuzzing/f.txt", "1\n"), ("Passwords/p.txt", "pw\n")):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(body)
+    with engine.begin() as c:
+        c.execute(text("DELETE FROM wordlists"))
+    with SessionLocal() as db:
+        assert wordlists.seed(db, tmp_path) == 2
+    with engine.begin() as c:
+        c.execute(text("UPDATE wordlists SET enabled=false WHERE key='Fuzzing/f.txt'"))
+    with SessionLocal() as db:
+        wordlists.seed(db, tmp_path)
+    with engine.connect() as c:
+        rows = c.execute(text("SELECT key, category, lines, enabled FROM wordlists ORDER BY key")).all()
+    assert rows == [("Discovery/Web/a.txt", "discovery", 2, True), ("Fuzzing/f.txt", "fuzzing", 1, False)]
+    assert wordlists.estimate(["Discovery/Web/a.txt", "Fuzzing/f.txt"], forms=10) == 12

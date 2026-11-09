@@ -75,7 +75,7 @@ MFA (TOTP) is required for every role, one prompt per sign-in.
 ## Owner
 | Method & path | Body | Result |
 |---|---|---|
-| GET `/catalog` | – | `{profiles: ProfileInfo[], modules: ModuleInfo[]}` |
+| GET `/catalog` | – | `{profiles: ProfileInfo[], modules: ModuleInfo[], limits: {pre, deep: {budget_min, request_cap, rate_per_s}}, advisory_as_of: string, wordlists: {key, category: 'discovery'|'fuzzing', label, lines}[] /* enabled only */}`. `pre`/`deep` and modules `crawl`,`dast`,`api` are `available` only while a healthy worker reports the engine (ZAP and egress guard) up; `cms`,`config`,`auth`,`access`,`cval` are always available. Module lists are in execution order. |
 | GET `/dashboard` | – | `{counts: {assessments, open_findings, active_jobs}, active_job: Job|null, recent: AssessmentSummary[], capacity: Capacity}` |
 | GET `/assessments` | – | `AssessmentSummary[]` (own only; admins also only their own here) |
 | POST `/assessments` | `{name, target, env, hosts, paths, ports, exclusions, notes}` | 201 `Assessment` (status `draft`). 422 with field errors (target errors per DESIGN_SYSTEM §7.2) |
@@ -93,7 +93,7 @@ MFA (TOTP) is required for every role, one prompt per sign-in.
 | GET `/findings/{id}` | – | `FindingDetail` |
 | POST `/findings/{id}/state` | `{action: 'acknowledge'|'under-review'|'false-positive'|'accept-risk'|'reopen', reason?}` | `FindingDetail`; transitions + required reasons per DESIGN_SYSTEM §7.6; owner only |
 | POST `/findings/{id}/comments` | `{text}` | `FindingDetail`; owner only |
-| POST `/jobs` | `{assessment_id, profile: 'quick'|null, modules: ModuleKey[]|null, authorized: true, idempotency_key: string}` | 202 `Job` (with queue_position/wait_estimate). Same idempotency_key → same job. 422 if `authorized` not true, or no profile/modules · 409 if assessment not `active` · 503 `{detail}` when blocked (paused/emergency) · 429 queue cap / per-user quota reached. `reach` is always included. |
+| POST `/jobs` | `{assessment_id, profile: 'quick'|'pre'|'deep'|null, modules: ModuleKey[]|null, authorized: true, idempotency_key: string, wordlists?: string[] /* catalog keys */, credential_ids?: string[] /* this assessment's, not deleted */}` | 202 `Job` (with queue_position/wait_estimate). Same idempotency_key → same job. 422 if `authorized` not true, or no profile/modules · 409 if assessment not `active` · 503 `{detail}` when blocked (paused/emergency) · 429 queue cap / per-user quota reached. `reach` is always included. 422 field errors: `profile` when `pre`/`deep` is chosen while the engine is down; `wordlists` for unknown/disabled lists, fuzzing lists without `deep`, any list without `pre`/`deep`, or `"This selection needs about {n} requests; the limit for this profile is {cap}."`; `credential_ids` for accounts not on this assessment. Production stays Quick only. Jobs using engine modules wait while `engine_slots` are full; Quick Scans behind them still start. |
 | GET `/jobs/{id}` | – | `Job` (owner of the assessment, or admin) |
 | POST `/jobs/{id}/cancel` | – | `Job`; owner only; queued→cancelled (modules skipped), running→cancelling |
 | GET `/queue` | – | `{capacity: Capacity, mine: Job[] /* queued+running */, platform: {position: number, mine: boolean, state: JobState, job_id: string|null /* null when not mine */}[], recent: Job[] /* last 10 finished */}` |
@@ -112,8 +112,10 @@ MFA (TOTP) is required for every role, one prompt per sign-in.
 | POST `/admin/jobs/{id}/cancel` | `{reason}` | `Job` |
 | POST `/admin/jobs/{id}/priority` | `{priority, reason}` | `Job`; queued only, else 409 |
 | POST `/admin/jobs/{id}/review` | `{outcome: 'resume'|'rerun-advised'|'closed', reason}` | `Job`; interrupted only; `resume` creates a new linked job (`resume_of`) with only the unfinished modules |
-| GET `/admin/capacity` | – | `{config: {limit, aging_enabled, aging_minutes, queue_cap, per_user_quota, paused}, capacity: Capacity, workers: Worker[], history: AuditEvent[]}` |
-| PUT `/admin/capacity` | `{limit, aging_enabled, aging_minutes, queue_cap, per_user_quota, reason}` | same as GET. 422 `"Only {n} healthy worker is available. Enable or provision more workers before raising the limit to {x}."` when limit > healthy workers; limit range 1–3 |
+| GET `/admin/capacity` | – | `{config: {limit, aging_enabled, aging_minutes, queue_cap, per_user_quota, paused, engine_slots: 1–3, profile_limits: {pre, deep: {budget_min, request_cap, rate_per_s}}}, capacity: Capacity, workers: Worker[], history: AuditEvent[]}` |
+| GET `/admin/wordlists` | – | `{key, category, label, lines, enabled}[]` |
+| PUT `/admin/wordlists` | `{key, enabled, reason}` | the updated wordlist. 422 empty reason · 404 unknown key. Audited (area `capacity`) |
+| PUT `/admin/capacity` | `{limit, aging_enabled, aging_minutes, queue_cap, per_user_quota, engine_slots?: 1–3, profile_limits?: {pre?, deep?: {budget_min: 5–600, request_cap: 100–200000, rate_per_s: 1–50}}, reason}` (unnamed profiles keep their limits; changes audited) | same as GET. 422 `"Only {n} healthy worker is available. Enable or provision more workers before raising the limit to {x}."` when limit > healthy workers; limit range 1–3 |
 | POST `/admin/workers/{id}` | `{action: 'enable'|'drain', reason}` | `Worker[]` |
 | GET `/admin/audit?q=&area=&actor=&outcome=` | – | `AuditEvent[]` newest first, capped at 500. Always sends `X-Total-Count` (all matches); `X-Truncated: true` when capped |
 | GET `/admin/audit.csv?…` | – | `text/csv`, all matching rows (no cap); the export itself is audited |

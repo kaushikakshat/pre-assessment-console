@@ -22,7 +22,7 @@ from app.scheduler.admission import ACTIVE, claim_next, heartbeat, reap_expired
 from app.targets import ipguard
 from app.targets.safe_http import BlockedAddress, RequestCapExceeded, SafeClient, ScopeError
 from app.targets.validate import _internal, first_rule, parse_target
-from app.worker.modules import MODULES, TIMEOUTS
+from app.worker.modules import MODULES, TIMEOUTS, wordlists
 from app.worker.modules.base import Blocked, Ctx
 from app.worker.redact import redact
 
@@ -170,6 +170,19 @@ def run_job(job_id, worker, halt, resolver=socket.getaddrinfo):
         _end(db, job, worker, final_state(states), None, "")
 
 
+def engine_ok() -> bool:
+    """The engine answers and the egress guard is reachable; either one down means Deep/Pre cannot run safely."""
+    url, ctl = os.environ.get("ENGINE_URL"), os.environ.get("EGRESS_CONTROL")
+    if not url or not ctl:
+        return False
+    try:
+        with httpx.Client(timeout=2) as c:
+            return (c.get(f"{url}/JSON/core/view/version/", params={"apikey": os.environ.get("ZAP_API_KEY", "")}).status_code == 200
+                    and c.get(f"{ctl}/stats", headers={"X-Egress-Token": os.environ.get("EGRESS_TOKEN", "")}).status_code == 200)
+    except httpx.HTTPError:
+        return False
+
+
 def register(db, name):
     db.execute(insert(Worker).values(name=name, last_heartbeat_at=func.now())
                .on_conflict_do_update(index_elements=["name"], set_={"last_heartbeat_at": func.now()}))
@@ -227,11 +240,16 @@ def main():
         signal.signal(s, lambda *_: stop.set())
     with SessionLocal() as db:
         register(db, name)
+        try:
+            wordlists.seed(db)
+        except Exception:
+            log.exception("wordlist seeding failed")
+            db.rollback()
     log.info("worker started")
     while not stop.is_set():
         try:
             with SessionLocal() as db:
-                heartbeat(db, name)
+                heartbeat(db, name, engine_ok=engine_ok())
                 reap_expired(db)
                 job = None if stop.is_set() else claim_next(db, name)
                 job_id = job.id if job else None
