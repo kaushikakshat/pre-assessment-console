@@ -31,6 +31,7 @@ export const VOCAB: Record<StatusKind, Record<string, StatusDef>> = {
     blocked: d('Blocked', 'danger', 'stop'),
     failed: d('Failed', 'danger', 'x'),
     cancelled: d('Cancelled', 'neutral', 'slash'),
+    available: d('Available', 'ok', 'check'),
     unavailable: d('Unavailable', 'neutral', 'slash'),
     inconclusive: d('Inconclusive', 'warn', 'help'),
     interrupted: d('Interrupted', 'warn', 'pause'),

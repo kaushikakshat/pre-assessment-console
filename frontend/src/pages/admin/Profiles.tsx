@@ -16,6 +16,7 @@ export function Profiles() {
   const [target, setTarget] = useState<Wordlist | null>(null);
   const act = useAct();
   if (cat.error && !cat.data) return <LoadError error={cat.error} thing="profiles and modules" onRetry={cat.reload} />;
+  if (words.error && !words.data) return <LoadError error={words.error} thing="wordlists" onRetry={words.reload} />;
   if (!cat.data || !words.data) return <Loading />;
   const limits = caps.data?.config.profile_limits ?? cat.data.limits;
   const { profiles, modules } = cat.data;
@@ -29,7 +30,7 @@ export function Profiles() {
     { key: 'n', header: 'Module', render: (m) => <><b>{m.name}</b><div className="muted">{m.description}</div></> },
     { key: 'u', header: 'Used by', render: (m) => m.profiles.map((p) => profiles.find((x) => x.key === p)?.name ?? p).join(', ') },
     { key: 'v', header: 'Engine version', render: () => <TbdMarker label="Engine version" od={13} /> },
-    { key: 's', header: 'Status', render: (m) => <StatusBadge kind="module" status={m.available ? 'completed' : 'unavailable'} label={m.available ? 'Available' : 'Unavailable'} /> },
+    { key: 's', header: 'Status', render: (m) => <StatusBadge kind="module" status={m.available ? 'available' : 'unavailable'} /> },
   ];
   const wcols: Column<Wordlist>[] = [
     { key: 'l', header: 'Wordlist', render: (w) => w.label },
@@ -52,7 +53,7 @@ export function Profiles() {
                 <p>{p.description}</p>
                 <div className="badge-row">{p.modules.map((m) => <span key={m} className="tag">{names[m] ?? m}</span>)}</div>
                 <p className="muted">Duration: {p.duration}</p>
-                <p className="muted">{l ? `Limits: ${l.budget_min} minutes · ${l.request_cap.toLocaleString('en-IN')} requests · ${l.rate_per_s} requests per second` : 'Limits: none beyond the platform defaults.'}</p>
+                {l && <p className="muted">{`Limits: ${l.budget_min} minutes · ${l.request_cap.toLocaleString('en-IN')} requests · ${l.rate_per_s} requests per second`}</p>}
               </div>
             </Card>
           );

@@ -73,3 +73,9 @@ it('test_wordlist_toggle_requires_reason', async () => {
   expect(calls.find((c) => c.method === 'PUT')!.body).toEqual({ key: 'raft', enabled: false, reason: 'Too noisy' });
   expect(screen.getAllByText('Crawler').length).toBeTruthy();
 });
+
+it('wordlists load failure shows an error with retry, not endless loading', async () => {
+  mockApi({ '/catalog': catalog, '/admin/capacity': { config, capacity, workers: [], history: [] }, '/admin/wordlists': json(500, { detail: 'Boom.' }) });
+  mount('/admin/profiles');
+  expect(await screen.findByRole('button', { name: /try again|retry/i })).toBeTruthy();
+});
