@@ -1,5 +1,5 @@
 fastapi
-uvicorn[standard]
+uvicorn[standard]==0.54.0
 sqlalchemy>=2
 psycopg[binary]>=3
 alembic
