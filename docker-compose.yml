@@ -1,0 +1,70 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-preassess}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-preassess}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init-app-role.sh:/docker-entrypoint-initdb.d/init-app-role.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build: ./backend
+    environment:
+      MIGRATION_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-preassess}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-preassess}
+    command: alembic upgrade head
+    depends_on:
+      db: {condition: service_healthy}
+
+  api:
+    build: ./backend
+    environment:
+      APP_ENV: ${APP_ENV:-prod}
+      SECRET_KEY: ${SECRET_KEY:?set in .env}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      DATABASE_URL: postgresql+psycopg://app_user:${APP_DB_PASSWORD}@db:5432/${POSTGRES_DB:-preassess}
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=${FORWARDED_ALLOW_IPS:-*}
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    # no published port: nginx (web) is the only entry, so trusting X-Forwarded-For from any peer is safe
+
+  worker:
+    build: ./backend
+    environment:
+      APP_ENV: ${APP_ENV:-prod}
+      SECRET_KEY: ${SECRET_KEY:?set in .env}
+      DATABASE_URL: postgresql+psycopg://app_user:${APP_DB_PASSWORD}@db:5432/${POSTGRES_DB:-preassess}
+    command: python -m app.worker.main
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+
+  # Only for pytest; owner creds live here, never in long-running services.
+  test:
+    build: ./backend
+    profiles: [test]
+    environment:
+      TEST_DATABASE_URL: postgresql+psycopg://app_user:${APP_DB_PASSWORD}@db:5432/preassess_test
+      TEST_MIGRATION_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-preassess}:${POSTGRES_PASSWORD}@db:5432/preassess_test
+    command: pytest
+    depends_on:
+      db: {condition: service_healthy}
+
+  web:
+    build: ./frontend
+    depends_on: [api]
+    ports:
+      - "8080:80"
+
+  testtarget:
+    build: ./dev/testtarget
+    profiles: [dev]
+
+volumes:
+  pgdata:
