@@ -2,7 +2,7 @@ import argparse
 import secrets
 
 from argon2 import PasswordHasher
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.core.audit import record
 from app.db import SessionLocal
@@ -10,9 +10,10 @@ from app.models import User
 
 
 def create_admin(email, name):
+    email = email.strip().lower()
     temp = secrets.token_urlsafe(12)
     with SessionLocal() as db, db.begin():
-        if db.scalar(select(User).where(User.email == email)):
+        if db.scalar(select(User).where(func.lower(User.email) == email)):
             raise SystemExit("A user with that email already exists.")
         db.add(User(email=email, name=name, role="admin", status="active",
                     password_hash=PasswordHasher().hash(temp)))

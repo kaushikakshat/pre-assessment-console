@@ -2,8 +2,9 @@ import secrets
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from app.core import security as sec
 from app.core.audit import record
@@ -15,16 +16,16 @@ Role = Literal["owner", "admin"]
 
 
 class CreateIn(BaseModel):
-    name: str
-    email: str
+    name: str = Field(max_length=120)
+    email: str = Field(max_length=254)
     role: Role
-    team: str | None = None
+    team: str | None = Field(None, max_length=120)
 
 
 class ActionIn(BaseModel):
     action: Literal["change-role", "deactivate", "reactivate", "reset-mfa", "revoke-sessions"]
     role: Role | None = None
-    reason: str
+    reason: str = Field(max_length=1000)
 
 
 def shape(db, u: User):
@@ -51,7 +52,11 @@ def create_user(body: CreateIn, admin=Depends(sec.require_admin), db=Depends(get
     u = User(name=body.name.strip(), email=email, role=body.role, team=body.team, status="active",
              password_hash=sec.hash_password(temp))
     db.add(u)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "A user with that email already exists.")
     db.refresh(u)  # load server-side display_id
     record(db, admin.email, "users", "create", u.display_id, "success", f"Created {body.role} account")
     out = {"user": shape(db, u), "temporary_password": temp}

@@ -1,6 +1,6 @@
 import pyotp
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.sql import func as sf
 
@@ -14,12 +14,12 @@ ISSUER = "Pre-Assessment Console"
 
 
 class LoginIn(BaseModel):
-    email: str
-    password: str
+    email: str = Field(max_length=254)
+    password: str = Field(max_length=256)
 
 
 class MfaIn(BaseModel):
-    code: str
+    code: str = Field(max_length=12)
 
 
 def me(u: User):
@@ -57,7 +57,8 @@ def mfa(body: MfaIn, request: Request, response: Response, db=Depends(get_db)):
         raise HTTPException(401, "That code is not valid. Try again.")
     ip = sec.client_ip(request)
     sec.check_throttle(db, user.email.lower(), ip)  # pending cookie must not allow unlimited code guessing
-    if not pyotp.TOTP(user.totp_secret).verify(body.code.strip(), valid_window=1):
+    db.refresh(user)  # re-read last_totp_step now that the per-email lock is held
+    if not sec.verify_totp(user, body.code.strip()):
         sec.record_failure(db, user.email.lower(), ip)
         record(db, user.email, "auth", "mfa", user.display_id, "failure", "Invalid code")
         db.commit()

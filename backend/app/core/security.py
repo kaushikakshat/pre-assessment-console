@@ -3,10 +3,12 @@ import hmac
 import os
 import secrets
 import time
+
+import pyotp
 from datetime import datetime, timedelta, timezone
 
 from argon2 import PasswordHasher
-from argon2.exceptions import VerificationError
+from argon2.exceptions import InvalidHashError, VerificationError
 from fastapi import Depends, HTTPException, Request, Response
 from sqlalchemy import func, select, update
 
@@ -32,7 +34,7 @@ def verify_password(user: User | None, pw: str) -> bool:
     """Always performs one argon2 verify so unknown emails take the same time."""
     try:
         return _hasher.verify(user.password_hash if user else _DUMMY_HASH, pw) and user is not None
-    except VerificationError:
+    except (VerificationError, InvalidHashError):
         return False
 
 
@@ -50,6 +52,8 @@ def client_ip(request: Request) -> str | None:
 
 # ---- throttling ----
 def check_throttle(db, email: str, ip: str | None):
+    # Serialise attempts per email until commit/rollback so concurrent guesses cannot beat the limit.
+    db.execute(select(func.pg_advisory_xact_lock(func.hashtext(email))))
     since = datetime.now(timezone.utc) - THROTTLE_WINDOW
     by_email = db.scalar(select(func.count()).select_from(LoginAttempt)
                          .where(LoginAttempt.email == email, LoginAttempt.at > since))
@@ -77,11 +81,21 @@ def make_pending(user_id: int) -> str:
 def read_pending(token: str | None) -> int | None:
     try:
         uid, exp, sig = token.rsplit(".", 2)
-        if hmac.compare_digest(sig, _sign(f"{uid}.{exp}")) and int(exp) > time.time():
+        if hmac.compare_digest(sig.encode(), _sign(f"{uid}.{exp}").encode()) and int(exp) > time.time():
             return int(uid)
-    except (AttributeError, ValueError):
+    except (AttributeError, ValueError, UnicodeError):
         pass
     return None
+
+
+def verify_totp(user: User, code: str) -> bool:
+    """Accept +-1 step, but never a step at or before the last one used (replay)."""
+    totp, cur = pyotp.TOTP(user.totp_secret), int(time.time() // 30)
+    for step in range(cur - 1, cur + 2):
+        if hmac.compare_digest(totp.at(step * 30).encode(), code.encode()) and step > (user.last_totp_step or -1):
+            user.last_totp_step = step
+            return True
+    return False
 
 
 # ---- sessions ----

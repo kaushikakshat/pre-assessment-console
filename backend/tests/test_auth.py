@@ -158,3 +158,53 @@ def test_perm_for_and_can_matrix():
     assert all(can("owner", x) for x in every)
     assert {x for x in every if can("admin", x)} == {"view", "generate_report", "activity"}
     assert not any(can(None, x) for x in every)
+
+
+def test_forged_or_non_ascii_pending_cookie_is_401():
+    c = TestClient(app)
+    from app.core.security import read_pending
+    assert read_pending("1.9999999999.\u00e9\u00e9") is None  # str compare_digest used to raise TypeError
+    for bad in ("garbage", "1.1.deadbeef"):
+        r = c.post("/api/auth/mfa", json={"code": "123456"}, headers={"Cookie": "pa_pending=" + bad})
+        assert r.status_code == 401
+
+
+def test_totp_code_cannot_be_reused():
+    email = make_user()
+    signin(email)
+    c = TestClient(app)
+    c.post("/api/auth/login", json={"email": email, "password": PW})
+    r = c.post("/api/auth/mfa", json={"code": pyotp.TOTP(_secret(email)).now()})  # same step as signin's
+    assert r.status_code == 401
+
+
+def test_concurrent_wrong_passwords_are_capped():
+    from concurrent.futures import ThreadPoolExecutor
+    email = make_user()
+
+    def attempt(_):
+        return TestClient(app).post("/api/auth/login", json={"email": email, "password": "x"}).status_code
+
+    with ThreadPoolExecutor(10) as ex:
+        codes = list(ex.map(attempt, range(10)))
+    assert sorted(codes) == [401] * 5 + [429] * 5
+
+
+def test_oversized_inputs_422():
+    c = TestClient(app)
+    assert c.post("/api/auth/login", json={"email": "a" * 300 + "@x.test", "password": "x"}).status_code == 422
+    admin = signin(make_user("admin"))
+    r = admin.post("/api/admin/users", json={"name": "n" * 121, "email": "ok@example.test", "role": "owner"})
+    assert r.status_code == 422
+
+
+def test_duplicate_email_differing_in_case_409():
+    admin = signin(make_user("admin"))
+    body = {"name": "D", "email": "dupe.case@example.test", "role": "owner"}
+    assert admin.post("/api/admin/users", json=body).status_code == 201
+    assert admin.post("/api/admin/users", json={**body, "email": "DUPE.Case@Example.test"}).status_code == 409
+    with SessionLocal() as db:  # DB-level guard too
+        from sqlalchemy.exc import IntegrityError
+        db.add(User(name="x", email="Dupe.CASE@example.test", role="owner", password_hash="x"))
+        with pytest.raises(IntegrityError):
+            db.flush()
