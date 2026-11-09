@@ -43,7 +43,7 @@ export interface Validation { outcome: ValidationOutcome; checks: Check[]; norma
 export interface Approval { state: 'pending' | 'approved' | 'refused'; note: string | null; by: string | null; at: string | null; self: boolean }
 export interface Assessment {
   id: string; name: string; owner: { id: string; name: string }; target: string; env: Environment;
-  hosts: string; paths: string; ports: string; exclusions: string; notes: string | null;
+  hosts: string; paths: string; ports: string; exclusions: string; notes: string | null; allow_untrusted_cert: boolean;
   status: AssessmentStatus; validation: Validation | null; approval: Approval | null;
   active_job_id: string | null; created_at: string; updated_at: string; access: 'owner' | 'admin';
 }
@@ -54,7 +54,7 @@ export interface AssessmentSummary {
 }
 export interface ModuleRun { key: ModuleKey; name: string; state: ModuleState; detail: string | null; started_at: string | null; ended_at: string | null }
 export interface Job {
-  id: string; seq: number; assessment_id: string; assessment_name: string; type: 'scan'; profile: ProfileKey | null;
+  id: string; seq: number; assessment_id: string; assessment_name: string; type: 'scan' | 'retest'; retest_of?: string | null; profile: ProfileKey | null;
   priority: Priority; state: JobState; submitted_at: string; started_at: string | null; ended_at: string | null;
   policy_version: string; requested_by: string; note: string | null; resume_of: string | null;
   review: 'resumed' | 'rerun-advised' | 'closed' | null; modules: ModuleRun[];
@@ -70,7 +70,7 @@ export interface Location {
 }
 export interface Finding {
   id: string; assessment_id: string; job_id: string; severity: Severity; confidence: Confidence; state: FindingState;
-  module: ModuleKey; title: string; asset: string; first_seen_at: string; last_seen_at: string;
+  module: ModuleKey; credential_id?: string | null; title: string; asset: string; first_seen_at: string; last_seen_at: string;
 }
 export interface HistoryLine { at: string; by: string; text: string }
 export interface FindingDetail extends Finding {
@@ -92,3 +92,36 @@ export interface Dashboard {
   active_job: Job | null; recent: AssessmentSummary[]; capacity: Capacity;
 }
 export type LoginResult = { next: 'mfa' } | { next: 'enrol'; secret: string; otpauth_uri: string };
+
+export type LoginStyle = 'single' | 'two-step';
+export interface SigninSetup {
+  style: LoginStyle; login_url: string; username_field: string; password_field: string; code_field: string | null;
+  otp_url: string | null; otp_field: string | null; logged_in_indicator: string; logged_out_indicator: string | null;
+  bypass_code_set: boolean; updated_at: string;
+}
+export interface TestAccount { id: string; role_label: string; username_hint: string; last_test: 'ok' | 'failed' | null; last_tested_at: string | null }
+export interface SigninState { setup: SigninSetup | null; accounts: TestAccount[] }
+export interface Wordlist { key: string; category: 'discovery' | 'fuzzing'; label: string; lines: number }
+
+export type ReportType = 'management' | 'technical';
+export type ReportState = 'generating' | 'ready' | 'failed';
+// Contract from backend Task 11 (docs/API.md not yet extended).
+export interface Report { id: string; assessment_id: string; job_id: string; type: ReportType; version: number; state: ReportState; created_at: string; requested_by: string; error?: string | null }
+export interface ReportOverviewRow { n: number; id: string; severity: Severity; title: string; location: string; confidence: Confidence; state: FindingState }
+export interface ReportDetail {
+  id: string; severity: Severity; confidence: Confidence; state: FindingState; title: string; location: Location; description: string; impact: string;
+  evidence: string; reproduce: string; remediation: string; references: string[]; history: HistoryLine[];
+}
+export interface ReportSummary { by_severity: Record<Severity, number>; total: number; still_open: number }
+export interface ReportModel {
+  header?: { product: string; classification: string };
+  title?: { assessment: string; type: string; report_id: string; version: number; generated_at: string; by: string };
+  watermark?: string;
+  scope?: Record<string, unknown>;
+  categories?: { key: string; label: string; count: number }[];
+  modules?: { key: string; name: string; state: string; detail: string | null; untested?: number }[];
+  summary?: ReportSummary;
+  findings_overview?: ReportOverviewRow[];
+  details?: ReportDetail[];
+  limitations?: string;
+}

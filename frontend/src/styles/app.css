@@ -289,3 +289,5 @@ input[type="checkbox"], input[type="radio"] { width: 16px; height: 16px; margin:
 .f4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--space-4); }
 .link-btn { padding: 0; border: 0; background: none; color: var(--primary); font: inherit; text-decoration: underline; cursor: pointer; }
 @media (max-width: 760px) { .f4 { grid-template-columns: 1fr; } }
+
+.report-title { font: 600 26px/32px var(--font-sans); }

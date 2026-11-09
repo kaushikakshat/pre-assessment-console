@@ -6,10 +6,16 @@ import { useLoad } from '../../lib/useLoad';
 import type { AuditEvent, Capacity as Cap, Worker } from '../../lib/types';
 import { useAct } from './common';
 
-interface Config { limit: number; aging_enabled: boolean; aging_minutes: number; queue_cap: number; per_user_quota: number; paused: boolean }
+export interface Lim { budget_min: number; request_cap: number; rate_per_s: number }
+export type Limits = { pre: Lim; deep: Lim };
+interface Config { limit: number; aging_enabled: boolean; aging_minutes: number; queue_cap: number; per_user_quota: number; paused: boolean; engine_slots?: number; profile_limits?: Limits }
 interface Data { config: Config; capacity: Cap; workers: Worker[]; history: AuditEvent[] }
-type Form = { limit: string; aging_enabled: boolean; aging_minutes: string; queue_cap: string; per_user_quota: string };
-const toForm = (c: Config): Form => ({ limit: String(c.limit), aging_enabled: c.aging_enabled, aging_minutes: String(c.aging_minutes), queue_cap: String(c.queue_cap), per_user_quota: String(c.per_user_quota) });
+type LimForm = { budget_min: string; request_cap: string; rate_per_s: string };
+type Form = { limit: string; aging_enabled: boolean; aging_minutes: string; queue_cap: string; per_user_quota: string; engine_slots: string; pre: LimForm; deep: LimForm };
+const LIMS = [['budget_min', 'Budget (minutes)', 5, 600], ['request_cap', 'Request cap', 100, 200000], ['rate_per_s', 'Requests per second', 1, 50]] as const;
+const limForm = (l?: Lim): LimForm => ({ budget_min: String(l?.budget_min ?? ''), request_cap: String(l?.request_cap ?? ''), rate_per_s: String(l?.rate_per_s ?? '') });
+const limError = (v: string, lo: number, hi: number) => (/^\d+$/.test(v.trim()) && Number(v) >= lo && Number(v) <= hi ? undefined : `Enter a whole number from ${lo} to ${hi}.`);
+const toForm = (c: Config): Form => ({ limit: String(c.limit), aging_enabled: c.aging_enabled, aging_minutes: String(c.aging_minutes), queue_cap: String(c.queue_cap), per_user_quota: String(c.per_user_quota), engine_slots: String(c.engine_slots ?? 1), pre: limForm(c.profile_limits?.pre), deep: limForm(c.profile_limits?.deep) });
 const whole = (s: string) => /^\d+$/.test(s.trim()) && Number(s) >= 1;
 
 export function CapacityPage() {
@@ -33,7 +39,8 @@ export function CapacityPage() {
   const set = (patch: Partial<Form>) => { setForm({ ...form, ...patch }); setInline(null); save.clear(); };
   const limit = Number(form.limit);
   const changed = JSON.stringify(form) !== JSON.stringify(toForm(config));
-  const invalid = !whole(form.queue_cap) || !whole(form.per_user_quota) || (form.aging_enabled && !whole(form.aging_minutes));
+  const limBad = (['pre', 'deep'] as const).some((p) => LIMS.some(([k, , lo, hi]) => limError(form[p][k], lo, hi)));
+  const invalid = limBad || !whole(form.queue_cap) || !whole(form.per_user_quota) || (form.aging_enabled && !whole(form.aging_minutes));
   const lowering = cap.active > limit;
 
   const onSave = () => {
@@ -47,7 +54,8 @@ export function CapacityPage() {
   const confirm = async (reason: string) => {
     let fresh: Data | undefined;
     const ok = await save.run(async () => { fresh = await api<Data>('/admin/capacity', { method: 'PUT', body: {
-      limit, aging_enabled: form.aging_enabled, aging_minutes: Number(form.aging_minutes), queue_cap: Number(form.queue_cap), per_user_quota: Number(form.per_user_quota), reason,
+      limit, aging_enabled: form.aging_enabled, aging_minutes: Number(form.aging_minutes), queue_cap: Number(form.queue_cap), per_user_quota: Number(form.per_user_quota), engine_slots: Number(form.engine_slots), reason,
+      profile_limits: Object.fromEntries((['pre', 'deep'] as const).map((p) => [p, Object.fromEntries(LIMS.map(([k]) => [k, Number(form[p][k])]))])),
     } }); }, 'Capacity configuration saved.');
     setConfirming(false);
     if (ok && fresh) { setOverride(fresh); setForm(toForm(fresh.config)); } else setInline(null); // the server refusal shows inline below the form
@@ -85,7 +93,18 @@ export function CapacityPage() {
             <TextField id="cap" label="Queue cap" type="number" min={1} value={form.queue_cap} onChange={(e) => set({ queue_cap: e.target.value })} hint="Most jobs allowed to wait at once." />
             <p><TbdMarker label="Queue cap value" od={10} /></p>
             <TextField id="quota" label="Per-user quota" type="number" min={1} value={form.per_user_quota} onChange={(e) => set({ per_user_quota: e.target.value })} hint="Most queued and running jobs one user can have." />
-            <p className="muted">Per-profile limits <TbdMarker label="Per-profile limits" od={6} /></p>
+            <Select id="slots" label="Engine slots" value={form.engine_slots} onChange={(e) => set({ engine_slots: e.target.value })}
+              hint="Scans that use the scanning engine run at most this many at a time. Raise only after more scanning engines are provisioned.">
+              {[1, 2, 3].map((n) => <option key={n} value={n}>{n}</option>)}
+            </Select>
+            {([['pre', 'Pre-Assessment'], ['deep', 'Deep']] as const).map(([p, name]) => (
+              <fieldset key={p} className="stack"><legend>{name} limits</legend>
+                {LIMS.map(([k, label, lo, hi]) => (
+                  <TextField key={k} id={`${p}-${k}`} label={`${name}: ${label}`} type="number" value={form[p][k]}
+                    onChange={(e) => set({ [p]: { ...form[p], [k]: e.target.value } })} error={limError(form[p][k], lo, hi)} />
+                ))}
+              </fieldset>
+            ))}
             <Banner tone="info" title="Safe FIFO fallback">If priority aging cannot be applied, jobs run in submission order.</Banner>
             {inline && <Banner tone="danger" title="Not saved">{inline}</Banner>}
             {save.failure && !confirming && <Banner tone="danger" title="Not saved">{save.failure}</Banner>}

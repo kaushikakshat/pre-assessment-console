@@ -2,22 +2,25 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   ApprovalDecision, LiveNote, useToast, Banner, Button, Card, ConfidenceTag, DataTable, Disclaimer, EmptyState, KeyValue, LoadError, Loading, ModuleProgress, SeverityBadge,
-  SeverityBar, Select, StatusBadge, Tabs, Timeline, Checkbox, type Column,
+  SeverityBar, Select, Modal, OptionCard, TbdMarker, RetestModal, retestable, StatusBadge, Tabs, Timeline, Checkbox, type Column,
 } from '../components';
 import { formatIST, relativeTime } from '../lib/format';
 import { can } from '../lib/perm';
 import { BLOCKED_COPY, CONFIDENCE, PROFILE_NAMES, VOCAB } from '../lib/status';
+import { api, ApiError } from '../lib/api';
 import { useAuth } from '../auth/AuthContext';
 import { useLoad } from '../lib/useLoad';
 import {
-  CONFIDENCES, FINDING_STATES, SEVERITIES, type Assessment, type AuditEvent, type Capacity, type ModuleInfo, type Finding, type FindingState, type Job, type Severity,
+  CONFIDENCES, FINDING_STATES, SEVERITIES, type Assessment, type AuditEvent, type Capacity, type ModuleInfo, type Finding, type FindingState, type Job, type Report, type ReportType, type Severity,
 } from '../lib/types';
 import { SEVERITY } from '../lib/status';
 import { FindingDrawer } from './FindingDrawer';
+import { SigninSetup } from './SigninSetup';
 
 const ACTIVE = ['queued', 'validating', 'scheduled', 'running', 'cancelling'];
 const NEEDS_ACTION: FindingState[] = ['new', 'open', 'under-review', 'reopened'];
 const REVIEW_TEXT = { resumed: 'An administrator resumed the unfinished modules.', 'rerun-advised': 'An administrator advised running the scan again.', closed: 'An administrator closed this scan as is.' };
+const FINISHED = ['completed', 'completed-warnings'];
 const runName = (j: Job) => (j.profile ? PROFILE_NAMES[j.profile] : 'Individual modules');
 
 export function AssessmentDetail() {
@@ -32,6 +35,10 @@ export function AssessmentDetail() {
   const { user } = useAuth();
   const toast = useToast();
   const [deciding, setDeciding] = useState(false);
+  const reports = useLoad<Report[]>(`/assessments/${id}/reports`, (rs) => (rs.some((r) => r.state === 'generating') ? 3000 : 0));
+  const [generating, setGenerating] = useState(false);
+  const [retest, setRetest] = useState<Finding[] | null>(null);
+  const [sel, setSel] = useState<ReadonlySet<string>>(new Set());
 
   const activeId = jobs.data?.find((j) => ACTIVE.includes(j.state))?.id ?? null;
   const live = useLoad<Job>(activeId ? `/jobs/${activeId}` : null, (j) => (ACTIVE.includes(j.state) ? 3000 : 0));
@@ -69,6 +76,9 @@ export function AssessmentDetail() {
             {level === 'admin' && <span className="badge tone-info">Administrator view</span>}
           </div>
         </div>
+        <div className="stack">
+          {can(level, 'generate-report') && <Button icon="doc" disabled={!jobs.data?.some((j) => FINISHED.includes(j.state))} onClick={() => setGenerating(true)}>Generate report</Button>}
+        </div>
         {can(level, 'new-scan') && (
           <div className="stack">
             {as.status === 'draft' || as.status === 'blocked'
@@ -105,14 +115,19 @@ export function AssessmentDetail() {
         { key: 'overview', label: 'Overview' },
         { key: 'findings', label: 'Findings', count: findings.data?.length },
         { key: 'modules', label: 'Modules' },
+        { key: 'reports', label: 'Reports', count: reports.data?.length },
+        ...(level === 'owner' ? [{ key: 'signin', label: 'Sign-in' }] : []),
         { key: 'history', label: 'Scan history' },
         { key: 'activity', label: 'Activity' },
       ]}>
         {(tab) => (
           <div className="stack-lg" style={{ marginTop: 'var(--space-4)' }}>
             {tab === 'overview' && <Overview as={as} latest={latest} findings={findings.data} />}
-            {tab === 'findings' && (findings.error && !findings.data ? <LoadError error={findings.error} thing="findings" onRetry={findings.reload} /> : findings.data ? <Findings rows={findings.data} moduleName={moduleName} /> : <Loading />)}
+            {tab === 'findings' && (findings.error && !findings.data ? <LoadError error={findings.error} thing="findings" onRetry={findings.reload} /> : findings.data ? <Findings rows={findings.data} moduleName={moduleName} sel={can(level, 'retest') ? sel : null} setSel={setSel}
+              onRetest={() => setRetest(findings.data!.filter((f) => sel.has(f.id)))} canRetest={as.status === 'active'} /> : <Loading />)}
             {tab === 'modules' && (latest ? <ModulesTab job={latest} /> : <Card><EmptyState title="No scan yet">Modules appear here after the first scan.</EmptyState></Card>)}
+            {tab === 'reports' && <Reports as={as} data={reports} jobs={jobs.data ?? []} level={level} />}
+            {tab === 'signin' && level === 'owner' && <SigninSetup assessmentId={as.id} />}
             {tab === 'history' && <History jobs={jobs.data} />}
             {tab === 'activity' && can(level, 'activity-tab') && <Activity id={as.id} />}
           </div>
@@ -120,7 +135,14 @@ export function AssessmentDetail() {
       </Tabs>
 
       {finding && (
-        <FindingDrawer key={finding} id={finding} access={level} ownerName={as.owner.name} moduleName={moduleName} onClose={closeDrawer} onChanged={reloadFindings} />
+        <FindingDrawer key={finding} id={finding} access={level} ownerName={as.owner.name} moduleName={moduleName} onClose={closeDrawer} onChanged={reloadFindings}
+          onRetest={level === 'owner' ? (f) => setRetest([f]) : undefined} retestBlocked={as.status === 'active' ? undefined : 'Retest needs an active assessment.'} />
+      )}
+      {generating && <GenerateDialog assessmentId={as.id} jobs={jobs.data ?? []} onClose={() => setGenerating(false)} onDone={() => { setGenerating(false); toast('Report queued.'); reports.reload(); }} />}
+      {retest && (
+        <RetestModal assessmentId={as.id} target={as.target} findings={retest} moduleName={moduleName} blocked={scanReason}
+          onClose={() => setRetest(null)}
+          onQueued={(j) => { setRetest(null); setSel(new Set()); toast(`Retest queued as ${j.id}.`); reloadJobs(); }} />
       )}
     </div>
   );
@@ -159,6 +181,7 @@ function Overview({ as, latest, findings }: { as: Assessment; latest?: Job; find
           <KeyValue items={[
             { label: 'Target', value: as.target, mono: true },
             { label: 'Environment', value: as.env },
+            { label: 'Untrusted certificate', value: as.allow_untrusted_cert ? 'Allowed (test environment)' : 'Not allowed' },
             { label: 'Hosts', value: as.hosts, mono: true },
             { label: 'Paths', value: as.paths, mono: true },
             { label: 'Ports', value: as.ports, mono: true },
@@ -174,7 +197,9 @@ function Overview({ as, latest, findings }: { as: Assessment; latest?: Job; find
   );
 }
 
-function Findings({ rows, moduleName }: { rows: Finding[]; moduleName: (k: string) => string }) {
+function Findings({ rows, moduleName, sel, setSel, onRetest, canRetest }: {
+  rows: Finding[]; moduleName: (k: string) => string; sel: ReadonlySet<string> | null; setSel: (s: ReadonlySet<string>) => void; onRetest: () => void; canRetest: boolean;
+}) {
   const [params] = useSearchParams();
   const [f, setF] = useState({ severity: '', state: '', module: '', confidence: '' });
   const [group, setGroup] = useState(false);
@@ -190,7 +215,9 @@ function Findings({ rows, moduleName }: { rows: Finding[]; moduleName: (k: strin
   ];
   const pick = (k: keyof typeof f) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
   const table = (rs: Finding[], caption: string) => (
-    <DataTable key={caption} caption={caption} columns={cols} rows={rs} rowKey={(r) => r.id} empty={{ title: 'Nothing here' }} />
+    <DataTable key={caption} caption={caption} columns={cols} rows={rs} rowKey={(r) => r.id}
+      selection={sel ? { header: 'Select for retest', selected: sel, label: (r) => `Select ${r.id}`, disabled: (r) => !retestable(r),
+        onToggle: (k) => { const n = new Set(sel); if (!n.delete(k)) n.add(k); setSel(n); } } : undefined} empty={{ title: 'Nothing here' }} />
   );
   const filtered = Object.values(f).some(Boolean);
   return (
@@ -201,6 +228,8 @@ function Findings({ rows, moduleName }: { rows: Finding[]; moduleName: (k: strin
         <Select id="f-mod" label="Module" value={f.module} onChange={pick('module')}><option value="">All</option>{modules.map((m) => <option key={m} value={m}>{moduleName(m)}</option>)}</Select>
         <Select id="f-conf" label="Confidence" value={f.confidence} onChange={pick('confidence')}><option value="">All</option>{CONFIDENCES.map((c) => <option key={c} value={c}>{CONFIDENCE[c].label}</option>)}</Select>
         <Checkbox checked={group} onChange={(e) => setGroup(e.target.checked)} label="Group by module" />
+        {sel && <Button variant="primary" disabled={!canRetest || sel.size === 0} onClick={onRetest}>{`Request retest (${sel.size})`}</Button>}
+        {sel && !canRetest && <small className="muted">Retest needs an active assessment.</small>}
       </div>
       {shown.length === 0 ? (
         <Card><EmptyState title={filtered ? 'No findings match these filters' : 'No findings yet'}
@@ -244,5 +273,67 @@ function Activity({ id }: { id: string }) {
     <Card title="Activity">
       <Timeline rows={data.map((e) => ({ at: e.at, text: <>{e.actor} · {e.action} · <span className="mono">{e.object}</span>{e.detail && <span className="muted"> — {e.detail}</span>}</> }))} />
     </Card>
+  );
+}
+
+const REPORT_TYPES: Record<ReportType, string> = { management: 'Management summary', technical: 'Technical / developer report' };
+const jobLabel = (j: Job) => `${j.id} · ${runName(j)} · ${formatIST(j.ended_at)}`;
+
+function GenerateDialog({ assessmentId, jobs, onClose, onDone }: { assessmentId: string; jobs: Job[]; onClose: () => void; onDone: () => void }) {
+  const finished = jobs.filter((j) => FINISHED.includes(j.state));
+  const [type, setType] = useState<ReportType>('management');
+  const [jobId, setJobId] = useState(finished[0]?.id ?? '');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const submit = async () => {
+    setBusy(true); setError(null);
+    try { await api(`/assessments/${assessmentId}/reports`, { method: 'POST', body: { type, job_id: jobId } }); onDone(); }
+    catch (e) { setError(e instanceof ApiError ? e.detail : 'The report was not queued. Try again.'); }
+    finally { setBusy(false); }
+  };
+  return (
+    <Modal open title="Generate report" onClose={onClose}
+      footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" disabled={!jobId} busy={busy} busyLabel="Queuing…" onClick={submit}>Generate report</Button></>}>
+      {(Object.keys(REPORT_TYPES) as ReportType[]).map((t) => <OptionCard key={t} type="radio" name="report-type" title={REPORT_TYPES[t]} checked={type === t} onChange={() => setType(t)} />)}
+      <Select id="report-job" label="Based on scan" value={jobId} onChange={(e) => setJobId(e.target.value)}>
+        {finished.map((j) => <option key={j.id} value={j.id}>{jobLabel(j)}</option>)}
+      </Select>
+      <p className="muted">Results are grouped into seven categories: Confirmed, Suspected, False positive, Unresolved, Blocked, Skipped and Not tested. Classification: <TbdMarker label="TBD" od={8} /></p>
+      {error && <Banner tone="danger" title="Not queued">{error}</Banner>}
+    </Modal>
+  );
+}
+
+function Reports({ as, data, jobs, level }: { as: Assessment; data: ReturnType<typeof useLoad<Report[]>>; jobs: Job[]; level: 'owner' | 'admin' }) {
+  const toast = useToast();
+  const [retrying, setRetrying] = useState<string | null>(null);
+  if (data.error && !data.data) return <LoadError error={data.error} thing="reports" onRetry={data.reload} />;
+  if (!data.data) return <Loading />;
+  const retry = async (r: Report) => {
+    setRetrying(r.id);
+    try { await api(`/reports/${r.id}/retry`, { method: 'POST' }); toast('Report queued again.'); data.reload(); }
+    catch (e) { toast(e instanceof ApiError ? e.detail : 'The retry was not queued. Try again.'); }
+    finally { setRetrying(null); }
+  };
+  const cols: Column<Report>[] = [
+    { key: 'id', header: 'Report', render: (r) => <><span className="mono">{r.id}</span> · v{r.version}</> },
+    { key: 'type', header: 'Type', render: (r) => REPORT_TYPES[r.type] ?? r.type },
+    { key: 'job', header: 'Based on', mono: true, render: (r) => r.job_id },
+    { key: 'gen', header: 'Generated', render: (r) => `${formatIST(r.created_at)} · ${r.requested_by}` },
+    { key: 'st', header: 'Status', render: (r) => <StatusBadge kind="report" status={r.state} /> },
+    { key: 'act', header: 'Actions', render: (r) => (
+      <span className="filters">
+        {r.state === 'ready' && <Link to={`/reports/${r.id}`}>Preview<span className="sr-only"> {r.id}</span></Link>}
+        {r.state === 'ready' && can(level, 'export-report') && <a download href={`/api/reports/${r.id}/pdf`}><span>Export PDF</span><span className="sr-only"> {r.id}</span></a>}
+        {r.state === 'failed' && can(level, 'generate-report') && <Button size="sm" busy={retrying === r.id} onClick={() => retry(r)}>Retry<span className="sr-only"> {r.id}</span></Button>}
+      </span>
+    ) },
+  ];
+  return (
+    <>
+      {data.data.some((r) => r.state === 'failed') && <Banner tone="danger" title="Report generation failed — your assessment results are unchanged">{data.data.filter((r) => r.state === 'failed').map((r) => r.id).join(', ')}: retry re-renders the report from the stored results. It does not run the scan again.</Banner>}
+      <DataTable caption="Reports" columns={cols} rows={data.data} rowKey={(r) => r.id}
+        empty={{ title: 'No reports yet', text: jobs.some((j) => FINISHED.includes(j.state)) ? `Use Generate report to create one for ${as.name}.` : 'Reports can be generated after a scan finishes.' }} />
+    </>
   );
 }
