@@ -232,3 +232,18 @@ def test_production_retest_of_only_non_quick_findings_422(world):  # noqa: F811
         cn.execute(text("UPDATE assessments SET env='Production' WHERE id=:i"), {"i": aid})
     r = retest(c, a, [fid])
     assert r.status_code == 422 and r.json()["detail"]["fields"]["finding_ids"] == "These findings need checks that Production targets do not allow."
+
+
+def test_retest_of_access_finding_includes_every_account_and_is_not_retested_when_absent(world, monkeypatch):  # noqa: F811
+    c, a, aid, uid = world
+    with SessionLocal() as db, db.begin():
+        db.add_all([Credential(assessment_id=aid, role_label=r, username_enc=b"x", password_enc=b"x") for r in ("User", "Admin")])
+    fid = add_finding(aid, first_job(aid, uid), module="access")
+    r = retest(c, a, [fid])
+    assert r.status_code == 202 and [m["key"] for m in r.json()["modules"]] == ["reach", "auth", "access"]
+    with SessionLocal() as db:
+        assert len(db.query(Job).filter_by(type="retest").one().credential_ids) == 2
+    (w,) = workers(1)
+    run_retest(w, monkeypatch, [], auth=lambda ctx: ModuleResult("completed", "ok"), access=lambda ctx: ModuleResult("completed", "ok"))
+    state, hist, _ = get(fid)
+    assert state == "not-retested" and "Cross-account findings need both accounts" in hist[-1]

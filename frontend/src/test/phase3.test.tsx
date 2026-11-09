@@ -167,3 +167,16 @@ describe('wizard', () => {
     expect(await screen.findByText(/This selection needs about 9,000 requests/)).toBeTruthy();
   });
 });
+
+describe('wizard modules error', () => {
+  it('test_submit_shows_modules_field_error', async () => {
+    const { user } = await toConfigure();
+    mockApi({ ...base, '/catalog': catalog(), '/assessments/A-0001/signin': { setup: setup(), accounts: [] },
+      'POST /jobs': () => json(422, { detail: { fields: { modules: 'Choose at least one check.' } } }) });
+    await user.click(await screen.findByRole('radio', { name: /Quick Scan/ }));
+    await user.click(screen.getByRole('button', { name: 'Continue to review' }));
+    await user.click(await screen.findByLabelText(/I confirm I am authorized/));
+    await user.click(screen.getByRole('button', { name: 'Submit scan' }));
+    expect(await screen.findByText('Choose at least one check.')).toBeTruthy();
+  });
+});

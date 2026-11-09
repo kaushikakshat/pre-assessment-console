@@ -50,6 +50,7 @@ services:
       ENGINE_URL: http://zap:8090
       EGRESS_CONTROL: http://egress:3129
     command: python -m app.worker.main
+    mem_limit: 768m
     volumes:
       - reports:/data/reports
     networks: [default, engine]

@@ -39,8 +39,11 @@ def retest(aid: str, body: RetestIn, user=Depends(sec.current_user), db=Depends(
     kept = [f for f in found if not prod or f.module in QUICK]  # the rest become Not retested in the worker
     if not kept:
         raise err("finding_ids", "These findings need checks that Production targets do not allow.")
+    # An access finding records no account, so re-checking it needs every account (both sides of the comparison).
+    every = any(f.module == "access" for f in kept)
     creds = sorted(db.scalars(select(Credential.display_id).where(
-        Credential.id.in_([f.credential_id for f in kept if f.credential_id]), Credential.deleted_at.is_(None))))
+        Credential.assessment_id == a.id if every else Credential.id.in_([f.credential_id for f in kept if f.credential_id]),
+        Credential.deleted_at.is_(None))))
     mods = {f.module for f in kept}
     if mods & ENGINE_MODULES:
         mods.add("crawl")

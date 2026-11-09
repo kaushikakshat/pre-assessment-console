@@ -320,7 +320,7 @@ function Review({ assessment, form, run, extras, signin, catalog, policy, onBack
       if (j?.id) setJob(j); else setError({ unavailable: true, text: '' });
     } catch (e) {
       const client = e instanceof ApiError && e.status > 0 && e.status < 500;
-      setError({ unavailable: !client, text: client ? (e.fields?.wordlists ?? e.fields?.profile ?? e.fields?.credential_ids ?? e.detail) : '' });
+      setError({ unavailable: !client, text: client ? (e.fields?.wordlists ?? e.fields?.profile ?? e.fields?.credential_ids ?? e.fields?.modules ?? e.detail) : '' });
     }
     setBusy(false);
   };

@@ -33,7 +33,7 @@ export function RetestModal({ assessmentId, target, findings, moduleName, blocke
     try {
       onQueued(await api<Job>(`/assessments/${assessmentId}/retest`, { method: 'POST', body: { finding_ids: findings.map((f) => f.id), authorized: true, idempotency_key: key } }));
     } catch (e) {
-      setError(e instanceof ApiError ? e.detail : 'The retest was not queued. Try again.');
+      setError(e instanceof ApiError ? (e.fields ? Object.values(e.fields).join(' ') : e.detail) : 'The retest was not queued. Try again.');
     } finally { setBusy(false); }
   };
 

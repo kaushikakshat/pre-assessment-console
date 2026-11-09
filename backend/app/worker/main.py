@@ -4,6 +4,7 @@ import contextlib
 import hashlib
 import logging
 import os
+import re
 import signal
 import socket
 import ssl
@@ -221,6 +222,9 @@ def run_job(job_id, worker, halt, resolver=socket.getaddrinfo):
         states, run_ctx, engine_down, bad_cert = [], {"profile": job.profile, "notes": a.notes or "", "wordlists": list(job.wordlists or [])}, False, None
         if "auth" in keys:
             load_accounts(db, a, run_ctx, job.credential_ids or ())
+        setup = db.get(LoginSetup, a.id)
+        login_urls = [u for u in (setup.login_url, setup.otp_url) if u] if setup else []  # never crawled, fuzzed or attacked
+        run_ctx["exclude"] = [re.escape(u) + ".*" for u in login_urls]
         limits = db.scalar(select(SchedulerConfig.profile_limits).where(SchedulerConfig.id == 1)) or {}
         run_ctx["request_cap"] = limits.get(job.profile, {}).get("request_cap", REQUEST_CAP)
         run_ctx["rate_per_s"] = limits.get(job.profile, {}).get("rate_per_s", 10)
@@ -241,7 +245,7 @@ def run_job(job_id, worker, halt, resolver=socket.getaddrinfo):
                 bad_cert = untrusted_cert(args)  # None or the detail
             if key in ENGINE_MODULES and key in MODULES and not engine_down and not bad_cert and "session" not in run_ctx:
                 try:
-                    s = stack.enter_context(stages.EngineSession(job, a, scope, ttl_s=(budget_s * 60 if budget_s else 3600) + 120))
+                    s = stack.enter_context(stages.EngineSession(job, a, scope, extra_exclude=login_urls, ttl_s=(budget_s * 60 if budget_s else 3600) + 120))
                     run_ctx.update(session=s, zap=s.zap, exclude=s.exclude)
                 except (EngineDown, EngineError):
                     engine_down = True

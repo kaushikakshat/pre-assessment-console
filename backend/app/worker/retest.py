@@ -50,6 +50,8 @@ def reconcile(db, job, excluded=(), seen=()) -> None:
                    else "the original wordlist selection exceeds the current request limit")
         elif f.module not in runs:
             why = f"the {f.module} check could not run in this retest"
+        elif f.module == "access":  # the owner account is not recorded, so absence cannot prove a fix
+            why = "Cross-account findings need both accounts"
         elif f.credential_id and (cred is None or cred[1] is not None):
             why = "the account it was found with was removed"
         elif f.credential_id and cred[0] in excluded:

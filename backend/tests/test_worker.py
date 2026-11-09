@@ -246,3 +246,35 @@ def test_cert_probe_fails_closed_after_one_retry(setup, monkeypatch):
     claim(w)
     run(jid, w)
     assert snapshot(jid)[1]["crawl"] == ("failed", wm.UNREACHABLE_CERT) and len(calls) == 2
+
+
+def test_login_and_otp_urls_are_excluded_from_engine_and_modules(setup, monkeypatch):
+    """Safety constraint: the login/OTP URLs are never crawled, fuzzed or attacked, with or without accounts."""
+    w, aid, uid, fakes = setup
+    seen = {}
+
+    class Session:
+        zap = None
+        def __init__(self, job, a, scope, **kw):
+            seen["extra"] = kw.get("extra_exclude")
+            self.exclude = wm.stages.excluded_regexes(a, kw.get("extra_exclude", ()))
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def crawl(ctx):
+        seen["rc"] = ctx.run_ctx["exclude"]
+        return ModuleResult("completed", "ok")
+
+    fakes["crawl"] = crawl
+    monkeypatch.setattr(wm.stages, "EngineSession", Session)
+    monkeypatch.setattr(wm, "untrusted_cert", lambda args: None)
+    with SessionLocal() as db:
+        db.add(wm.LoginSetup(assessment_id=aid, style="single", login_url="http://x.test/login", username_field="u",
+                             password_field="p", logged_in_indicator="ok", otp_url="http://x.test/otp"))
+        db.commit()
+    jid = add_job(aid, uid, modules=("reach", "crawl"))
+    claim(w)
+    run(jid, w)
+    assert seen["extra"] == ["http://x.test/login", "http://x.test/otp"]
+    import re
+    assert all(any(re.fullmatch(r, u + "?x=1") for r in seen["rc"]) for u in seen["extra"])  # ZAP exclusions and run_ctx

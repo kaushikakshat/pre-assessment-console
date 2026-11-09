@@ -22,6 +22,7 @@ function mockApi(routes: Record<string, unknown>) {
     const path = String(url).replace('/api', '');
     if (path === '/auth/me') return json(200, me);
     const r = routes[`${init?.method ?? 'GET'} ${path}`] ?? routes[path];
+    if (r instanceof Response) return r;
     return r ? json(200, r) : json(404, { detail: 'No.' });
   });
 }
@@ -50,6 +51,19 @@ test('test_retest_confirm_disabled_until_checked', async () => {
   expect((queue as HTMLButtonElement).disabled).toBe(true);
   await u.click(within(dlg).getByRole('checkbox', { name: /still authorized/ }));
   expect((queue as HTMLButtonElement).disabled).toBe(false);
+});
+
+test('test_retest_shows_field_errors', async () => {
+  mockApi({ ...base, 'POST /assessments/A-0001/retest': json(422, { detail: { fields: { finding_ids: 'These findings need checks that Production targets do not allow.' } } }) });
+  mount('/assessments/A-0001?tab=findings');
+  const u = userEvent.setup();
+  await u.click(await screen.findByRole('tab', { name: /Findings/ }));
+  await u.click(await screen.findByRole('checkbox', { name: 'Select F-1' }));
+  await u.click(screen.getByRole('button', { name: 'Request retest (1)' }));
+  const dlg = await screen.findByRole('dialog');
+  await u.click(within(dlg).getByRole('checkbox', { name: /still authorized/ }));
+  await u.click(within(dlg).getByRole('button', { name: 'Queue retest' }));
+  expect(await within(dlg).findByText(/need checks that Production targets do not allow/)).toBeTruthy();
 });
 
 test('test_false_positive_row_not_selectable', async () => {
