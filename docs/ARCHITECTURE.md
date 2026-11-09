@@ -13,6 +13,8 @@
 | `web` | Serves the SPA, proxies `/api` to `api` |
 | `api` | Auth (argon2 + TOTP, sessions), permFor/can authorization, target validation, assessments/jobs/findings APIs, audit |
 | `worker` | Claims jobs, runs modules, writes redacted findings, heartbeats (stub until task B4) |
+| `zap` | OWASP ZAP daemon (compose profile `dast`, `-Xmx1g`); on internal-only `engine` network, egress only via `egress` |
+| `egress` | Guard proxy (`python -m app.egress`): ipguard + scope on every connection; control API on 3129 (token), proxy on 3128; on `engine` + `default`, no published ports |
 | `db` | System of record, queue, audit |
 | `testtarget` | Intentionally weak nginx demo target (dev only; compose profile `dev`) |
 
@@ -37,4 +39,4 @@ users, sessions (token hash), login_attempts, assessments, policy_versions, jobs
 - Dev-only internal-target rule allows `testtarget` when `APP_ENV=dev`; loopback/link-local/metadata never overridable.
 
 ## Run locally
-`cp .env.example .env`, `docker-compose --profile dev up -d --build --scale worker=2`, then `docker-compose exec api python -m app.cli create-admin --email ... --name ...`. Only the UI is published (:8080); the API is reached through it at http://localhost:8080/api. Tests: `docker-compose --profile test run --rm test` (uses a separate `preassess_test` database).
+Set `ZAP_API_KEY`, `EGRESS_TOKEN` and the credential keypair (`python -m app.cli gen-credential-keys`) in `.env`; add `--profile dast` to start ZAP. `cp .env.example .env`, `docker-compose --profile dev up -d --build --scale worker=2`, then `docker-compose exec api python -m app.cli create-admin --email ... --name ...`. Only the UI is published (:8080); the API is reached through it at http://localhost:8080/api. Tests: `docker-compose --profile test run --rm test` (uses a separate `preassess_test` database).

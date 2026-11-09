@@ -1,0 +1,63 @@
+{
+ "zap": {
+  "image": "zaproxy/zap-stable",
+  "version": "2.17.0",
+  "digest": "sha256:9624669db72f54d86c4b46a7064518bd9bf79d8c61a4c31befa9923489f328af"
+ },
+ "seclists": {
+  "repo": "https://github.com/danielmiessler/SecLists",
+  "version": "2026.2",
+  "commit": "145f1f45ba7bc5fd6b3966d3a79bf95654deb20e",
+  "paths": [
+   "Discovery",
+   "Fuzzing"
+  ],
+  "exclude": "(?i)pass|user|cred"
+ },
+ "testssl": {
+  "repo": "https://github.com/testssl/testssl.sh",
+  "version": "v3.2.5",
+  "commit": "4f17be931a9d60f3f987975aea8221f1a8eaf7aa"
+ },
+ "retire": {
+  "version": "6.1.0",
+  "url": "https://raw.githubusercontent.com/RetireJS/retire.js/6.1.0/repository/jsrepository.json",
+  "sha256": "557465843feee5d84b0a6d440448be44984ffa5c534b07f5bce5c7b95ff7fbd5",
+  "dest": "retire/jsrepository.json"
+ },
+ "eol": {
+  "version": "release-data@62d5df3fe76b383b95f3d7a252cf5df4b851d6d7",
+  "url": "https://raw.githubusercontent.com/endoflife-date/release-data/62d5df3fe76b383b95f3d7a252cf5df4b851d6d7/releases/{name}.json",
+  "files": {
+   "python": "b789ba9d730717a606a7907900aafab350f432779583b83515246ca5d035efb4",
+   "nodejs": "8fe2f123e8933aac319678f6369dd1c0c5876bead2ed84f5acd7392d603e0841",
+   "php": "46ff6d5e98c2e8c15ad0cd4b83b539c849c00c37eb2a718c90887b637b63fad6",
+   "nginx": "d0a1dcb01b7699a4272bc92b8adaf743584cdcf42eb57f54e9876ad29e92c1e8",
+   "apache-http-server": "0fe444e9a0db7a6ec2404d2aa55b5dfb90e04f72a698500c0f335f783af9d27e",
+   "wordpress": "bd0401d58461115a3103a3127b72e1ef099946429178c35adfac6b6ce2722528",
+   "drupal": "a43802669040c5844c6ba515b8a67867d3954528be08f054c3b682b0fbf088f5",
+   "jquery": "7cd3914d4bd761f360b9b4430004abc3c6bf95645f2302c123bb95e65ac934f2",
+   "tomcat": "566a732c10efc0f8017a1697b934138e98cb0fa3e09fc2f48de54e69f6a51b78",
+   "openssl": "2a6a41dc266b3c1568a60e30c4f6dd5184ec9e8bb06f9e70c6e0430c5fa73e95",
+   "mysql": "d209b3b2775625095855e4ceec2835c3f35ee3becae89410ceb45772c8602bf7",
+   "postgresql": "c3c94aa13454ebb0f49a9bddde3686b4be28b61dfec592dc5590ebe9c863c70d",
+   "angular": "37f7ea487265a2379670648849aa055f1d637fb901d1e80e48541e6a22ad6293",
+   "django": "1a127d0ac3bf283676a26e6e72786bffd057dd71c0056c97ec3841d839c18060",
+   "laravel": "11af82e345dd28709e405ce45b519ce1aa7305048e5477e2c1a0de5206c13217"
+  }
+ },
+ "fonts": [
+  {
+   "name": "ibm-plex-sans",
+   "version": "1.1.0",
+   "url": "https://github.com/IBM/plex/releases/download/%40ibm/plex-sans%401.1.0/ibm-plex-sans.zip",
+   "sha256": "fb365d910566e6d199cc2c15579a7dd9a267128e18431a394ed81f1970c69200"
+  },
+  {
+   "name": "ibm-plex-mono",
+   "version": "2.5.0",
+   "url": "https://github.com/IBM/plex/releases/download/%40ibm/plex-mono%402.5.0/ibm-plex-mono.zip",
+   "sha256": "6d23f01257663d8cc49a0d64c22ced630b79e0e2a0ac08a0da86e9a38bbc481c"
+  }
+ ]
+}

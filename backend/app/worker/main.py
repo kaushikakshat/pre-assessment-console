@@ -219,7 +219,7 @@ def run_with_lease(job_id, name, stop):
 
 
 def main():
-    validate_env()
+    validate_env("worker")
     name, stop = socket.gethostname(), threading.Event()
     for s in (signal.SIGTERM, signal.SIGINT):
         signal.signal(s, lambda *_: stop.set())
