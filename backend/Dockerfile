@@ -11,7 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends nmap bash opens
       libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0 fontconfig \
  && apt-get clean && useradd --create-home scanner
 COPY --from=vendor /opt/vendor /opt/vendor
-RUN ln -s /opt/vendor/fonts /usr/share/fonts/plex && fc-cache -f \
+RUN mkdir -p /data/reports && chown scanner /data/reports \
+ && ln -s /opt/vendor/fonts /usr/share/fonts/plex && fc-cache -f \
  && ln -s /opt/vendor/testssl/testssl.sh /usr/local/bin/testssl.sh
 WORKDIR /app
 COPY requirements.txt .

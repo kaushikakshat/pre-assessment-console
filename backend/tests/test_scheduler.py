@@ -18,7 +18,7 @@ _n = itertools.count()
 def sched():
     """Empty queue, default config, no workers; restores config afterwards."""
     with engine.begin() as c:
-        for t in ("findings", "module_runs"):
+        for t in ("reports", "findings", "module_runs"):
             c.execute(text(f"DELETE FROM {t}"))
         c.execute(text("UPDATE workers SET current_job_id = NULL"))
         c.execute(text("DELETE FROM jobs"))
