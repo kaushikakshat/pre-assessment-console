@@ -40,7 +40,7 @@ def shape(db, j: Job, queue=True) -> dict:
             "started_at": j.started_at, "ended_at": j.ended_at, "policy_version": j.policy_version,
             "requested_by": u.name, "note": j.note,
             "resume_of": db.scalar(select(Job.display_id).where(Job.id == j.resume_of)) if j.resume_of else None,
-            "review": j.review,
+            "review": j.review, "retest_of": j.retest_of,
             "modules": [{"key": r.key, "name": NAMES.get(r.key, r.key), "state": r.state, "detail": r.detail,
                          "started_at": r.started_at, "ended_at": r.ended_at} for r in runs],
             "queue_position": pos, "wait_estimate": admission.wait_estimate(pos)}
@@ -107,6 +107,12 @@ def submit(body: JobIn, user=Depends(sec.current_user), db=Depends(get_db)):
     if not 1 <= len(key) <= 120:
         raise HTTPException(422, {"fields": {"idempotency_key": "Enter a valid value."}})
     modules = _choose_modules(body, a.env)
+    return enqueue(db, user, a, key, modules, body)
+
+
+def enqueue(db, user, a: Assessment, key: str, modules: list[str], body: JobIn, what="Scan", **job_fields):
+    """Idempotency, status, engine, blocked, extras, queue cap and quota checks, then the job and its module rows.
+    Shared by POST /jobs and POST /assessments/{id}/retest."""
     scoped = f"{user.id}:{key}"
     prior = db.scalar(select(Job).where(Job.idempotency_key == scoped))
     if prior:
@@ -129,7 +135,7 @@ def submit(body: JobIn, user=Depends(sec.current_user), db=Depends(get_db)):
         raise HTTPException(429, f"You already have {cfg.per_user_quota} active scans. Wait for one to finish or cancel it.")
     j = Job(assessment_id=a.id, requested_by=user.id, profile=body.profile if body.modules is None else None,
             policy_version=a.policy_version, idempotency_key=scoped,
-            wordlists=body.wordlists, credential_ids=body.credential_ids)
+            wordlists=body.wordlists, credential_ids=body.credential_ids, **job_fields)
     db.add(j)
     try:
         db.flush()
@@ -138,7 +144,7 @@ def submit(body: JobIn, user=Depends(sec.current_user), db=Depends(get_db)):
         return shape(db, db.scalar(select(Job).where(Job.idempotency_key == scoped)))
     db.refresh(j)
     db.add_all(ModuleRun(job_id=j.id, key=k) for k in modules)
-    record(db, user.email, "job", "submit", j.display_id, "success", f"Scan submitted for {a.display_id}", a.policy_version)
+    record(db, user.email, "job", "submit", j.display_id, "success", f"{what} submitted for {a.display_id}", a.policy_version)
     db.commit()
     return shape(db, j)
 

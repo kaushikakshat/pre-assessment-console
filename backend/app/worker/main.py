@@ -28,6 +28,7 @@ from app.targets.safe_http import BlockedAddress, RequestCapExceeded, SafeClient
 from app.targets.validate import _internal, first_rule, parse_target
 from app.worker.modules import MODULES, TIMEOUTS, wordlists
 from app.worker.modules.base import Blocked, Ctx
+from app.worker.retest import reconcile
 from app.worker.redact import redact
 
 log = logging.getLogger("worker")
@@ -59,11 +60,12 @@ def confirm_findings(db, job, assessment, confirmed):
     db.flush()
 
 
-def load_accounts(db, a, run_ctx):
+def load_accounts(db, a, run_ctx, only=()):
     """Sealed blobs only: the auth module opens them into locals. Plaintext never enters run_ctx."""
     setup = db.get(LoginSetup, a.id)
     creds = db.execute(select(Credential.display_id, Credential.role_label, Credential.username_enc, Credential.password_enc)
-                       .where(Credential.assessment_id == a.id, Credential.deleted_at.is_(None)).order_by(Credential.id)).all()
+                       .where(Credential.assessment_id == a.id, Credential.deleted_at.is_(None),
+                              *([Credential.display_id.in_(only)] if only else [])).order_by(Credential.id)).all()
     if setup and creds:
         run_ctx["accounts"] = [(c.display_id, c.role_label, bytes(c.username_enc), bytes(c.password_enc)) for c in creds]
         run_ctx["login"] = {k: getattr(setup, k) for k in ("style", "login_url", "username_field", "password_field",
@@ -175,7 +177,7 @@ def _gate(db, job_id, worker):
     return "blocked" if row.status != "active" else None
 
 
-def _end(db, job, worker, state, module_state, detail):
+def _end(db, job, worker, state, module_state, detail, excluded=()):
     ok = db.execute(update(Job).where(Job.id == job.id, Job.lease_owner == worker, Job.state.in_(ACTIVE))
                     .values(state=state, ended_at=func.now(), lease_expires_at=None)).rowcount
     if ok:
@@ -183,6 +185,8 @@ def _end(db, job, worker, state, module_state, detail):
             db.execute(update(ModuleRun).where(ModuleRun.job_id == job.id, ModuleRun.state == "queued")
                        .values(state=module_state, detail=detail, ended_at=func.now()))
         db.execute(update(Worker).where(Worker.name == worker).values(current_job_id=None))
+        if job.retest_of and state in ("completed", "completed-warnings", "failed"):
+            reconcile(db, job, excluded)  # same transaction as the end state
         record(db, "system", "job", state, job.display_id, "failure" if state in ("failed", "blocked") else "success",
                detail or f"Job {state}")
     db.commit()
@@ -205,7 +209,7 @@ def run_job(job_id, worker, halt, resolver=socket.getaddrinfo):
         keys = list(db.scalars(select(ModuleRun.key).where(ModuleRun.job_id == job_id).order_by(ModuleRun.id)))
         states, run_ctx, engine_down, bad_cert = [], {"profile": job.profile, "notes": a.notes or "", "wordlists": list(job.wordlists or [])}, False, False
         if "auth" in keys:
-            load_accounts(db, a, run_ctx)
+            load_accounts(db, a, run_ctx, job.credential_ids or ())
         limits = db.scalar(select(SchedulerConfig.profile_limits).where(SchedulerConfig.id == 1)) or {}
         run_ctx["request_cap"] = limits.get(job.profile, {}).get("request_cap", REQUEST_CAP)
         run_ctx["rate_per_s"] = limits.get(job.profile, {}).get("rate_per_s", 10)
@@ -273,7 +277,7 @@ def run_job(job_id, worker, halt, resolver=socket.getaddrinfo):
             return
         if why:
             return _end(db, job, worker, why, why, None)
-        _end(db, job, worker, final_state(states), None, "")
+        _end(db, job, worker, final_state(states), None, "", run_ctx.get("excluded", ()))
 
 
 def engine_ok() -> bool:
