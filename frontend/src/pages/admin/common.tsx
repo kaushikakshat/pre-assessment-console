@@ -8,6 +8,7 @@ export type AdminJob = Job & { owner: string; target: string };
 export const AREAS: Record<AuditArea, string> = {
   auth: 'Sign-in', users: 'Users', assessment: 'Assessment', validation: 'Validation', job: 'Job',
   finding: 'Finding', capacity: 'Capacity', worker: 'Worker', approval: 'Approval',
+  scheduler: 'Scheduler', system: 'System', cli: 'Command line',
 };
 const OUTCOME = {
   success: { label: 'Success', tone: 'ok', icon: 'check' }, blocked: { label: 'Blocked', tone: 'warn', icon: 'stop' }, failure: { label: 'Failed', tone: 'danger', icon: 'x' },

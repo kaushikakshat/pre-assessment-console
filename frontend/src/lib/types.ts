@@ -31,7 +31,7 @@ export type Priority = (typeof PRIORITIES)[number];
 export type AssessmentStatus = (typeof ASSESSMENT_STATUSES)[number];
 export type WorkerStatus = (typeof WORKER_STATUSES)[number];
 export type LocationKind = 'Web page' | 'API endpoint' | 'File' | 'Network service' | 'Cookie' | 'Response header' | 'TLS certificate';
-export type AuditArea = 'auth' | 'users' | 'assessment' | 'validation' | 'job' | 'finding' | 'capacity' | 'worker' | 'approval';
+export type AuditArea = 'auth' | 'users' | 'assessment' | 'validation' | 'job' | 'finding' | 'capacity' | 'worker' | 'approval' | 'scheduler' | 'system' | 'cli';
 
 export interface User {
   id: string; name: string; email: string; role: Role; team: string | null;

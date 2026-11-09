@@ -14,6 +14,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from app.core.audit import record
+from app.core.startup import validate_env
 from app.db import SessionLocal
 from app.models import Assessment, Finding, Job, ModuleRun, PolicyVersion, Worker
 from app.scheduler.admission import ACTIVE, claim_next, heartbeat, reap_expired
@@ -218,6 +219,7 @@ def run_with_lease(job_id, name, stop):
 
 
 def main():
+    validate_env()
     name, stop = socket.gethostname(), threading.Event()
     for s in (signal.SIGTERM, signal.SIGINT):
         signal.signal(s, lambda *_: stop.set())

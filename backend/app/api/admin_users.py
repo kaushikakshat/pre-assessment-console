@@ -85,7 +85,7 @@ def user_action(user_id: str, body: ActionIn, admin=Depends(sec.require_admin), 
     elif a == "reactivate":
         u.status = "active"
     elif a == "reset-mfa":
-        u.totp_secret, u.mfa_enrolled = None, False
+        u.totp_secret, u.mfa_enrolled, u.last_totp_step = None, False, None
         sec.revoke_sessions(db, u.id)
     else:
         sec.revoke_sessions(db, u.id)

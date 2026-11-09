@@ -51,7 +51,7 @@ Finding     { id, assessment_id, job_id, severity: Severity, confidence: Confide
               title, asset: string, first_seen_at, last_seen_at }
 FindingDetail = Finding & { location: Location, description, impact, evidence: string /* already redacted */, reproduce, remediation,
               references: string[], policy_version, history: {at, by, text}[], comments: {at, by, text}[] }
-AuditEvent  { id, at, actor: string, area: 'auth'|'users'|'assessment'|'validation'|'job'|'finding'|'capacity'|'worker'|'approval', action: string,
+AuditEvent  { id /* string */, at, actor: string, area: 'auth'|'users'|'assessment'|'validation'|'job'|'finding'|'capacity'|'worker'|'approval'|'scheduler'|'system'|'cli', action: string,
               object: string, outcome: 'success'|'blocked'|'failure', detail: string, policy_version: string|null }
 Worker      { id, name /* admin only */, status: 'healthy'|'heartbeat-lost'|'standby', enabled: boolean, last_seen_at, current_job: string|null }
 ModuleInfo  { key: ModuleKey, name, description, available: boolean, profiles: ProfileKey[] }
@@ -107,8 +107,8 @@ MFA (TOTP) is required for every role, one prompt per sign-in.
 | GET `/admin/capacity` | – | `{config: {limit, aging_enabled, aging_minutes, queue_cap, per_user_quota, paused}, capacity: Capacity, workers: Worker[], history: AuditEvent[]}` |
 | PUT `/admin/capacity` | `{limit, aging_enabled, aging_minutes, queue_cap, per_user_quota, reason}` | same as GET. 422 `"Only {n} healthy worker is available. Enable or provision more workers before raising the limit to {x}."` when limit > healthy workers; limit range 1–3 |
 | POST `/admin/workers/{id}` | `{action: 'enable'|'drain', reason}` | `Worker[]` |
-| GET `/admin/audit?q=&area=&actor=&outcome=` | – | `AuditEvent[]` newest first (max 500) |
-| GET `/admin/audit.csv?…` | – | `text/csv`; the export itself is audited |
+| GET `/admin/audit?q=&area=&actor=&outcome=` | – | `AuditEvent[]` newest first, capped at 500. Always sends `X-Total-Count` (all matches); `X-Truncated: true` when capped |
+| GET `/admin/audit.csv?…` | – | `text/csv`, all matching rows (no cap); the export itself is audited |
 
 ## Health
 GET `/health` → `{status: 'ok'}` (unauthenticated, no details).

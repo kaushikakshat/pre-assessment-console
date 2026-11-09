@@ -19,7 +19,7 @@ async function send(path: string, method: string, body: unknown, headers: Record
   });
 }
 
-export async function api<T = void>(path: string, opts: { method?: string; body?: unknown } = {}): Promise<T> {
+export async function api<T = void>(path: string, opts: { method?: string; body?: unknown; onResponse?: (r: Response) => void } = {}): Promise<T> {
   const method = opts.method ?? 'GET';
   const headers: Record<string, string> = {};
   if (method !== 'GET') {
@@ -34,6 +34,7 @@ export async function api<T = void>(path: string, opts: { method?: string; body?
   } catch {
     throw new ApiError(0, 'The service is not reachable. Check your connection and try again.');
   }
+  if (res.ok) opts.onResponse?.(res);
   if (res.ok) return (res.status === 204 ? undefined : await res.json()) as T;
   let detail = 'Something went wrong. Try again.';
   let fields: Record<string, string> | undefined;

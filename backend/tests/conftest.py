@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, make_url
 APP_URL = os.environ["TEST_DATABASE_URL"]
 OWNER_URL = os.environ["TEST_MIGRATION_DATABASE_URL"]
 os.environ.setdefault("DATABASE_URL", APP_URL)  # app.db reads this at import
-os.environ.setdefault("SECRET_KEY", "test-only-secret-key")
+os.environ.setdefault("SECRET_KEY", "test-only-secret-key-0123456789abcdef")
 
 
 @pytest.fixture(scope="session", autouse=True)

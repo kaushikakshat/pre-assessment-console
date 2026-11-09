@@ -1,12 +1,21 @@
 import hmac
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.core.startup import validate_env
 from app.api import admin, admin_users, assessments, auth, catalog, dashboard, findings, jobs
 
-app = FastAPI(title="Pre-Assessment Platform", docs_url=None, redoc_url=None, openapi_url=None)
+
+@asynccontextmanager
+async def lifespan(_):
+    validate_env()
+    yield
+
+
+app = FastAPI(title="Pre-Assessment Platform", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 
 CSRF_EXEMPT = {"/api/auth/login", "/api/auth/mfa"}
 

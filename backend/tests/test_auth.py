@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pyotp
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from app.core.security import can, hash_password, perm_for
 from app.db import SessionLocal, engine
@@ -84,6 +84,30 @@ def test_throttle_after_five_failures():
     assert r.status_code == 429 and r.json()["detail"] == "Too many attempts. Wait 5 minutes before trying again."
 
 
+def test_ip_throttle_buckets_per_forwarded_ip():
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+    c = TestClient(ProxyHeadersMiddleware(app, trusted_hosts="*"))  # what uvicorn does behind nginx
+    def fail(ip, i):  # distinct emails keep the per-email limit out of the way
+        return c.post("/api/auth/login", json={"email": f"x{i}@example.test", "password": "x"}, headers={"X-Forwarded-For": ip}).status_code
+    assert [fail("10.0.0.1", i) for i in range(20)] == [401] * 20
+    assert fail("10.0.0.1", 99) == 429
+    assert fail("10.0.0.2", 100) == 401
+
+
+def test_validate_env(monkeypatch):
+    from app.core.startup import validate_env
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://app_user:s3cret@db/x")
+    for bad in (None, "short", "change-me-" + "x" * 30):
+        monkeypatch.delenv("SECRET_KEY", raising=False) if bad is None else monkeypatch.setenv("SECRET_KEY", bad)
+        with pytest.raises(SystemExit, match="SECRET_KEY"):
+            validate_env()
+    monkeypatch.setenv("SECRET_KEY", "k" * 32)
+    validate_env()
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://app_user:change-me-app@db/x")
+    with pytest.raises(SystemExit, match="APP_DB_PASSWORD"):
+        validate_env()
+
+
 def test_deactivated_403_only_with_correct_password():
     email = make_user(status="deactivated")
     c = TestClient(app)
@@ -127,6 +151,8 @@ def test_admin_creates_user_and_actions():
     assert n.get("/api/auth/me").status_code == 401  # revoked session
     r = c.post(f"/api/admin/users/{uid}/actions", json={"action": "reset-mfa", "reason": "lost phone"})
     assert r.json()["mfa"] == "pending"
+    with SessionLocal() as db:
+        assert db.scalar(select(User.last_totp_step).where(User.display_id == uid)) is None
 
 
 def test_cannot_deactivate_or_demote_self():

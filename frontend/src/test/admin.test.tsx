@@ -123,6 +123,14 @@ it('audit: export link carries the filters and the footer copy is exact', async 
   await waitFor(() => expect(screen.getByRole('link', { name: 'Export CSV (1)' }).getAttribute('href')).toBe('/api/admin/audit.csv?area=job'));
 });
 
+it('audit: truncated list says so and Export uses the total', async () => {
+  const ev = { id: '1', at: '2026-11-09T08:50:00Z', actor: 'Ada', area: 'job', action: 'job.cancel', object: 'JOB-1', outcome: 'success', detail: 'why', policy_version: null };
+  mockApi({ '/admin/audit?': new Response(JSON.stringify([ev]), { status: 200, headers: { 'X-Total-Count': '1234', 'X-Truncated': 'true' } }) });
+  mount('/admin/audit');
+  await screen.findByText('Showing the latest 1 of 1234 events.');
+  expect(screen.getByRole('link', { name: 'Export CSV (1234)' })).toBeTruthy();
+});
+
 it('capacity: after a successful save the form is seeded from the PUT response (Save disabled again)', async () => {
   const saved = { config: { ...config, limit: 2 }, capacity: { ...capacity, healthy_workers: 3, limit: 2 }, workers: [], history: [] };
   mockApi({ '/admin/capacity': { config, capacity: { ...capacity, healthy_workers: 3 }, workers: [], history: [] }, 'PUT /admin/capacity': json(200, saved) });

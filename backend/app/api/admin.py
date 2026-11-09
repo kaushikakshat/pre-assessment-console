@@ -16,6 +16,7 @@ from app.models import Assessment, AuditEvent, Job, ModuleRun, SchedulerConfig, 
 from app.scheduler import admission
 
 router = APIRouter(prefix="/admin", dependencies=[Depends(sec.require_admin)])
+AUDIT_CAP = 500
 LIVE = ("queued", "scheduled", "running", "cancelling")
 
 
@@ -27,7 +28,7 @@ def reason_of(s: str) -> str:
 
 
 def audit_shape(e: AuditEvent) -> dict:
-    return {"id": e.id, "at": e.at, "actor": e.actor, "area": e.area, "action": e.action, "object": e.object,
+    return {"id": str(e.id), "at": e.at, "actor": e.actor, "area": e.area, "action": e.action, "object": e.object,
             "outcome": e.outcome, "detail": e.detail, "policy_version": e.policy_version}
 
 
@@ -82,7 +83,7 @@ def approvals(admin=Depends(sec.require_admin), db=Depends(get_db)):
 
 class DecisionIn(BaseModel):
     decision: Literal["approve", "refuse"]
-    note: str = ""
+    note: str = Field("", max_length=1000)
 
 
 @router.post("/approvals/{aid}")
@@ -127,7 +128,7 @@ def locked_job(db, jid: str) -> Job:
 
 
 class ReasonIn(BaseModel):
-    reason: str = ""
+    reason: str = Field("", max_length=1000)
 
 
 @router.post("/jobs/{jid}/cancel")
@@ -169,6 +170,8 @@ def review(jid: str, body: ReviewIn, admin=Depends(sec.require_admin), db=Depend
         a = db.scalar(select(Assessment).where(Assessment.id == j.assessment_id).with_for_update())
         if a.status != "active":
             raise HTTPException(409, "This assessment is no longer active, so the scan cannot be resumed.")
+        if db.scalar(select(Job.id).where(Job.assessment_id == a.id, Job.state.in_(LIVE)).limit(1)):
+            raise HTTPException(409, "This assessment already has a queued or running scan.")
         keys = db.scalars(select(ModuleRun.key).where(ModuleRun.job_id == j.id, ModuleRun.state.in_(("interrupted", "queued")))
                           .order_by(ModuleRun.id)).all()
         new = Job(assessment_id=a.id, requested_by=admin.id, profile=j.profile, priority=j.priority,
@@ -245,7 +248,7 @@ def worker_action(wid: int, body: WorkerIn, admin=Depends(sec.require_admin), db
 
 # ---- audit ----
 def audit_query(q, area, actor, outcome):
-    sel = select(AuditEvent).order_by(AuditEvent.id.desc()).limit(500)
+    sel = select(AuditEvent).order_by(AuditEvent.id.desc())
     if q:
         sel = sel.where(AuditEvent.action.icontains(q, autoescape=True) | AuditEvent.object.icontains(q, autoescape=True)
                         | AuditEvent.detail.icontains(q, autoescape=True))
@@ -259,8 +262,13 @@ def audit_query(q, area, actor, outcome):
 
 
 @router.get("/audit")
-def audit(q: str = "", area: str = "", actor: str = "", outcome: str = "", db=Depends(get_db)):
-    return [audit_shape(e) for e in db.scalars(audit_query(q, area, actor, outcome))]
+def audit(response: Response, q: str = "", area: str = "", actor: str = "", outcome: str = "", db=Depends(get_db)):
+    sel = audit_query(q, area, actor, outcome)
+    total = db.scalar(select(func.count()).select_from(sel.order_by(None).subquery()))
+    response.headers["X-Total-Count"] = str(total)
+    if total > AUDIT_CAP:
+        response.headers["X-Truncated"] = "true"
+    return [audit_shape(e) for e in db.scalars(sel.limit(AUDIT_CAP))]
 
 
 def _cell(v) -> str:
@@ -271,7 +279,7 @@ def _cell(v) -> str:
 @router.get("/audit.csv")
 def audit_csv(q: str = "", area: str = "", actor: str = "", outcome: str = "",
               admin=Depends(sec.require_admin), db=Depends(get_db)):
-    rows = db.scalars(audit_query(q, area, actor, outcome)).all()
+    rows = db.scalars(audit_query(q, area, actor, outcome)).all()  # no cap: the export is complete (shortcut: buffered in memory, stream if the log outgrows it)
     out = io.StringIO()
     w = csv.writer(out)
     w.writerow(["id", "at", "actor", "area", "action", "object", "outcome", "detail", "policy_version"])

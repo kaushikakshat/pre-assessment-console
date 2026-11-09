@@ -11,7 +11,8 @@ export function Audit() {
   const [open, setOpen] = useState<AuditEvent | null>(null);
   useEffect(() => { const t = setTimeout(() => setApplied(f), 300); return () => clearTimeout(t); }, [f]);
   const qs = new URLSearchParams(Object.entries(applied).filter(([, v]) => v.trim() !== '').map(([k, v]) => [k, v.trim()])).toString();
-  const { data, error, reload } = useLoad<AuditEvent[]>(`/admin/audit?${qs}`);
+  const [meta, setMeta] = useState({ total: 0, truncated: false });
+  const { data, error, reload } = useLoad<AuditEvent[]>(`/admin/audit?${qs}`, undefined, (r) => setMeta({ total: Number(r.headers.get('X-Total-Count')) || 0, truncated: r.headers.get('X-Truncated') === 'true' }));
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
 
   const cols: Column<AuditEvent>[] = [
@@ -23,7 +24,7 @@ export function Audit() {
     { key: 'out', header: 'Outcome', render: (e) => <OutcomeBadge outcome={e.outcome} /> },
   ];
   const csv = (
-    <a className="btn btn-secondary btn-md" href={`/api/admin/audit.csv${qs ? `?${qs}` : ''}`}>Export CSV{data ? ` (${data.length})` : ''}</a>
+    <a className="btn btn-secondary btn-md" href={`/api/admin/audit.csv${qs ? `?${qs}` : ''}`}>Export CSV{data ? ` (${meta.total || data.length})` : ''}</a>
   );
   return (
     <div className="stack-lg">
@@ -42,6 +43,7 @@ export function Audit() {
       {error && !data && <LoadError error={error} thing="the audit log" onRetry={reload} />}
       {!data && !error && <Loading />}
       {data && <DataTable caption="Audit events" columns={cols} rows={data} rowKey={(e) => e.id} empty={{ title: 'No events match', text: 'Try different filters.' }} />}
+      {data && meta.truncated && <p className="muted">Showing the latest {data.length} of {meta.total} events.</p>}
       <p className="muted">Events cannot be edited or deleted here. Secrets, passwords and tokens are never logged.</p>
       <Drawer open={!!open} title={open?.action ?? ''} badges={open && <OutcomeBadge outcome={open.outcome} />} onClose={() => setOpen(null)}
         footer={<span className="muted">Audit events are read-only.</span>}>

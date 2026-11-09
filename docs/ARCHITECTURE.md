@@ -14,7 +14,7 @@
 | `api` | Auth (argon2 + TOTP, sessions), permFor/can authorization, target validation, assessments/jobs/findings APIs, audit |
 | `worker` | Claims jobs, runs modules, writes redacted findings, heartbeats (stub until task B4) |
 | `db` | System of record, queue, audit |
-| `testtarget` | Intentionally weak nginx demo target (dev only) |
+| `testtarget` | Intentionally weak nginx demo target (dev only; compose profile `dev`) |
 
 ## Data model
 users, sessions (token hash), login_attempts, assessments, policy_versions, jobs, module_runs, findings (fingerprint dedupes across jobs), workers, scheduler_config (single row), audit_events. Display IDs (`U-001`, `A-0001`, `JOB-000001`, `F-0001`) come from Postgres sequences; integer PKs stay internal.
@@ -37,4 +37,4 @@ users, sessions (token hash), login_attempts, assessments, policy_versions, jobs
 - Dev-only internal-target rule allows `testtarget` when `APP_ENV=dev`; loopback/link-local/metadata never overridable.
 
 ## Run locally
-`cp .env.example .env`, `docker compose up --build --scale worker=2`, then `docker compose exec api python -m app.cli create-admin --email ... --name ...`. API on :8000 (dev only), UI on :8080. Tests: `docker compose --profile test run --rm test` (uses a separate `preassess_test` database).
+`cp .env.example .env`, `docker-compose --profile dev up -d --build --scale worker=2`, then `docker-compose exec api python -m app.cli create-admin --email ... --name ...`. Only the UI is published (:8080); the API is reached through it at http://localhost:8080/api. Tests: `docker-compose --profile test run --rm test` (uses a separate `preassess_test` database).

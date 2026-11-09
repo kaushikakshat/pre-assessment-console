@@ -154,6 +154,39 @@ def test_review_resume_and_others(sched):
     assert adm.post(f"/api/admin/jobs/{disp('jobs', add_job(aid, uid))}/review", json={"outcome": "closed", **R}).status_code == 409
 
 
+def test_resume_refused_while_assessment_has_live_scan(sched):
+    adm = signin(make_user("admin"))
+    aid, uid = make_assessment()
+    j = add_job(aid, uid, state="interrupted")
+    live = add_job(aid, uid, state="queued")
+    r = adm.post(f"/api/admin/jobs/{disp('jobs', j)}/review", json={"outcome": "resume", **R})
+    assert r.status_code == 409 and r.json()["detail"] == "This assessment already has a queued or running scan."
+    with engine.begin() as cn:
+        cn.execute(text("UPDATE jobs SET state='completed' WHERE id=:i"), {"i": live})
+    assert adm.post(f"/api/admin/jobs/{disp('jobs', j)}/review", json={"outcome": "resume", **R}).status_code == 200
+
+
+def test_reason_and_note_length_capped(sched):
+    adm = signin(make_user("admin"))
+    aid, uid = make_assessment()
+    jd = disp("jobs", add_job(aid, uid))
+    assert adm.post(f"/api/admin/jobs/{jd}/cancel", json={"reason": "x" * 1001}).status_code == 422
+    assert adm.post(f"/api/admin/approvals/A-0", json={"decision": "refuse", "note": "x" * 1001}).status_code == 422
+
+
+def test_audit_cap_headers_and_uncapped_csv(sched):
+    adm = signin(make_user("admin"))
+    with engine.begin() as cn:
+        cn.execute(text("INSERT INTO audit_events (actor, area, action, object, outcome, detail) "
+                        "SELECT 'cap@test', 'system', 'bulk', 'o' || g, 'success', '' FROM generate_series(1, 505) g"))
+    r = adm.get("/api/admin/audit?actor=cap@test")
+    assert len(r.json()) == 500 and r.headers["x-total-count"] == "505" and r.headers["x-truncated"] == "true"
+    assert isinstance(r.json()[0]["id"], str)
+    assert len(adm.get("/api/admin/audit.csv?actor=cap@test").text.splitlines()) == 506
+    r = adm.get("/api/admin/audit?actor=cap@test&q=o505")
+    assert r.headers["x-total-count"] == "1" and "x-truncated" not in r.headers
+
+
 def test_audit_filters_and_csv(sched):
     adm = signin(make_user("admin"))
     adm.put("/api/admin/capacity", json={"limit": 1, "aging_enabled": True, "aging_minutes": 15, "queue_cap": 50,

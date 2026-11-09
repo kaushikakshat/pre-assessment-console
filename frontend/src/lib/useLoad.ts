@@ -5,7 +5,7 @@ const RETRY_MS = 5000;
 
 /** GET `path` (null = idle). Keeps previous data while refreshing; `pollMs(data)` > 0 schedules the next refresh. */
 
-export function useLoad<T>(path: string | null, pollMs?: (d: T) => number) {
+export function useLoad<T>(path: string | null, pollMs?: (d: T) => number, onResponse?: (r: Response) => void) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [tick, setTick] = useState(0);
@@ -20,7 +20,7 @@ export function useLoad<T>(path: string | null, pollMs?: (d: T) => number) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const run = async () => {
       try {
-        const d = await api<T>(path);
+        const d = await api<T>(path, { onResponse });
         if (dead) return;
         setData(d); setError(null); setStalled(false);
         const ms = poll.current?.(d);
