@@ -14,6 +14,7 @@ import {
 } from '../lib/types';
 import { SEVERITY } from '../lib/status';
 import { FindingDrawer } from './FindingDrawer';
+import { SigninSetup } from './SigninSetup';
 
 const ACTIVE = ['queued', 'validating', 'scheduled', 'running', 'cancelling'];
 const NEEDS_ACTION: FindingState[] = ['new', 'open', 'under-review', 'reopened'];
@@ -105,6 +106,7 @@ export function AssessmentDetail() {
         { key: 'overview', label: 'Overview' },
         { key: 'findings', label: 'Findings', count: findings.data?.length },
         { key: 'modules', label: 'Modules' },
+        ...(level === 'owner' ? [{ key: 'signin', label: 'Sign-in' }] : []),
         { key: 'history', label: 'Scan history' },
         { key: 'activity', label: 'Activity' },
       ]}>
@@ -113,6 +115,7 @@ export function AssessmentDetail() {
             {tab === 'overview' && <Overview as={as} latest={latest} findings={findings.data} />}
             {tab === 'findings' && (findings.error && !findings.data ? <LoadError error={findings.error} thing="findings" onRetry={findings.reload} /> : findings.data ? <Findings rows={findings.data} moduleName={moduleName} /> : <Loading />)}
             {tab === 'modules' && (latest ? <ModulesTab job={latest} /> : <Card><EmptyState title="No scan yet">Modules appear here after the first scan.</EmptyState></Card>)}
+            {tab === 'signin' && level === 'owner' && <SigninSetup assessmentId={as.id} />}
             {tab === 'history' && <History jobs={jobs.data} />}
             {tab === 'activity' && can(level, 'activity-tab') && <Activity id={as.id} />}
           </div>

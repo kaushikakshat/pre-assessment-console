@@ -92,3 +92,13 @@ export interface Dashboard {
   active_job: Job | null; recent: AssessmentSummary[]; capacity: Capacity;
 }
 export type LoginResult = { next: 'mfa' } | { next: 'enrol'; secret: string; otpauth_uri: string };
+
+export type LoginStyle = 'single' | 'two-step';
+export interface SigninSetup {
+  style: LoginStyle; login_url: string; username_field: string; password_field: string; code_field: string | null;
+  otp_url: string | null; otp_field: string | null; logged_in_indicator: string; logged_out_indicator: string | null;
+  bypass_code_set: boolean; updated_at: string;
+}
+export interface TestAccount { id: string; role_label: string; username_hint: string; last_test: 'ok' | 'failed' | null; last_tested_at: string | null }
+export interface SigninState { setup: SigninSetup | null; accounts: TestAccount[] }
+export interface Wordlist { key: string; category: 'discovery' | 'fuzzing'; label: string; lines: number }
