@@ -46,6 +46,7 @@ class LoginAttempt(Base):
     __tablename__ = "login_attempts"
     id: Mapped[int] = mapped_column(primary_key=True)
     email: Mapped[str] = mapped_column(Text, index=True)
+    ip: Mapped[str | None] = mapped_column(Text, index=True)
     at: Mapped[datetime] = _ts(server_default=NOW)
 
 
