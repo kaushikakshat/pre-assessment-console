@@ -2,13 +2,15 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from app.api.catalog import QUICK
 from app.api.jobs import JobIn, _choose_modules, enqueue
 from app.core import security as sec
 from app.db import get_db
-from app.models import Credential, Finding
+from app.models import Credential, Finding, Job
 from app.scheduler.admission import ENGINE_MODULES
 
 router = APIRouter()
+WORDLIST_MODULES = {"exposed", "dast"}  # the modules that use a job's wordlists
 
 
 class RetestIn(BaseModel):
@@ -32,12 +34,20 @@ def retest(aid: str, body: RetestIn, user=Depends(sec.current_user), db=Depends(
         raise err("finding_ids", "Choose findings from this assessment.")
     if any(f.state in ("false-positive", "accepted-risk") for f in found):
         raise err("finding_ids", "False positives and accepted risks cannot be retested. Reopen them first.")
+    prod = a.env == "Production"
+    kept = [f for f in found if not prod or f.module in QUICK]  # the rest become Not retested in the worker
     creds = sorted(db.scalars(select(Credential.display_id).where(
-        Credential.id.in_([f.credential_id for f in found if f.credential_id]), Credential.deleted_at.is_(None))))
-    mods = {f.module for f in found}
+        Credential.id.in_([f.credential_id for f in kept if f.credential_id]), Credential.deleted_at.is_(None))))
+    mods = {f.module for f in kept}
     if mods & ENGINE_MODULES:
         mods.add("crawl")
     if creds:
         mods.add("auth")  # a removed account is not re-added; the worker marks its findings Not retested
-    body_jobs = JobIn(modules=sorted(mods), credential_ids=creds)
-    return enqueue(db, user, a, key, _choose_modules(body_jobs, a.env), body_jobs, what="Retest", type="retest", retest_of=ids)
+    # Inherit the profile (limits, budget) and wordlists of the jobs that last observed the findings, so deep or
+    # wordlist-only findings can reappear. Production is Quick only, so it inherits nothing.
+    origin = [] if prod else db.scalars(select(Job).where(Job.id.in_({f.job_id for f in kept}))).all()
+    profile = next((p for p in ("deep", "pre") if any(j.profile == p for j in origin)), None)
+    lists = sorted({w for f in kept if f.module in WORDLIST_MODULES for j in origin if j.id == f.job_id for w in j.wordlists or []})
+    body_jobs = JobIn(modules=["reach", *sorted(mods)], credential_ids=creds, profile=profile, wordlists=lists if profile else [])
+    return enqueue(db, user, a, key, _choose_modules(body_jobs, a.env), body_jobs, what="Retest",
+                   type="retest", retest_of=ids, profile=profile)

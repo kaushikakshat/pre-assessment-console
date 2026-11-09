@@ -127,15 +127,20 @@ def enqueue(db, user, a: Assessment, key: str, modules: list[str], body: JobIn, 
                     .execution_options(populate_existing=True))  # serialises quota and cap checks
     if cfg.emergency or cfg.paused:
         raise HTTPException(503, BLOCKED["emergency" if cfg.emergency else "paused"])
+    other = db.execute(select(Job.type).where(Job.assessment_id == a.id, Job.state.in_(ACTIVE))).scalars().all()
+    if job_fields.get("type") == "retest" and other:  # a concurrent scan could re-observe findings mid-retest
+        raise HTTPException(409, "This assessment already has a queued or running scan.")
+    if "retest" in other:
+        raise HTTPException(409, "A retest is running for this assessment. Wait for it to finish.")
     _check_extras(db, body, a, cfg)
     count = lambda *where: db.scalar(select(func.count()).select_from(Job).where(*where))  # noqa: E731
     if count(Job.state == "queued") >= cfg.queue_cap:
         raise HTTPException(429, "The scan queue is full. Try again later.")
     if count(Job.requested_by == user.id, Job.state.in_(ACTIVE)) >= cfg.per_user_quota:
         raise HTTPException(429, f"You already have {cfg.per_user_quota} active scans. Wait for one to finish or cancel it.")
-    j = Job(assessment_id=a.id, requested_by=user.id, profile=body.profile if body.modules is None else None,
-            policy_version=a.policy_version, idempotency_key=scoped,
-            wordlists=body.wordlists, credential_ids=body.credential_ids, **job_fields)
+    j = Job(**{"profile": body.profile if body.modules is None else None, **job_fields},
+            assessment_id=a.id, requested_by=user.id, policy_version=a.policy_version, idempotency_key=scoped,
+            wordlists=body.wordlists, credential_ids=body.credential_ids)
     db.add(j)
     try:
         db.flush()

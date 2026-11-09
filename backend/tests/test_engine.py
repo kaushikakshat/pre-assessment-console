@@ -8,7 +8,9 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from sqlalchemy import text
 
+from app.db import engine
 from app.engine import stages
 from app.engine.zap import EngineDown, EngineError, Zap, alert_to_draft
 from app.worker import main as wm
@@ -152,6 +154,8 @@ def test_engine_unreachable_module_unavailable(sched, monkeypatch):  # noqa: F81
     monkeypatch.setattr(wm, "MODULES", {"crawl": lambda ctx: called.append(1) or ModuleResult("completed", "ok"),
                                         "reach": lambda ctx: ModuleResult("completed", "ok")})
     (w,), (aid, uid) = workers(1), make_assessment()
+    with engine.begin() as cn:  # skip the certificate probe: this test is about the engine being down
+        cn.execute(text("UPDATE assessments SET allow_untrusted_cert=true WHERE id=:i"), {"i": aid})
     jid = add_job(aid, uid, modules=("reach", "crawl"))
     assert claim(w) == jid
     run(jid, w)

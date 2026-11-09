@@ -72,7 +72,7 @@ def load_accounts(db, a, run_ctx, only=()):
                             "logged_in_indicator", "code_field", "otp_url", "otp_field", "logged_out_indicator", "bypass_code_enc")}
 
 
-def store_findings(db, job, assessment, module, drafts):
+def store_findings(db, job, assessment, module, drafts, seen=None):
     """Dedupe by sha256(module|title|asset): a repeat only refreshes last_seen_at and the job reference."""
     db.execute(select(func.pg_advisory_xact_lock(assessment.id)))
     for d in drafts:
@@ -80,6 +80,8 @@ def store_findings(db, job, assessment, module, drafts):
             setattr(d, f, redact(getattr(d, f)))  # header values reach these fields too
         cred = db.scalar(select(Credential.id).where(Credential.display_id == d.credential_id)) if d.credential_id else None
         fp = fingerprint(module, d)
+        if seen is not None:
+            seen.add(fp)  # per-job observations: a concurrent job cannot overwrite these
         old = db.scalar(select(Finding).where(Finding.assessment_id == assessment.id, Finding.fingerprint == fp))
         if old:
             old.last_seen_at, old.job_id = func.now(), job.id
@@ -117,18 +119,25 @@ def _cert_failure(e) -> bool:
     return False
 
 
-def untrusted_cert(args) -> bool:
-    """ZAP ignores certificate errors, so honour the owner's decision here: one verifying probe before the engine opens."""
+UNREACHABLE_CERT = "Could not reach the target to check its certificate."
+
+
+def untrusted_cert(args) -> str | None:
+    """ZAP ignores certificate errors, so honour the owner's decision here: a verifying probe before the engine opens.
+    -> the failure detail, or None to go ahead. Fails closed when the probe cannot reach the target (one retry)."""
     if args["scheme"] != "https" or not args["verify"]:
-        return False
-    c = SafeClient({args["host"]}, args["internal_hosts"], max_requests=1, resolver=args["resolver"], verify=True)
-    try:
-        c.get(args["url"])
-    except Exception as e:  # any non-certificate failure is left to the modules to report
-        return _cert_failure(e)
-    finally:
-        c.close()
-    return False
+        return None
+    for attempt in (1, 2):
+        c = SafeClient({args["host"]}, args["internal_hosts"], max_requests=1, resolver=args["resolver"], verify=True)
+        try:
+            c.get(args["url"], deadline=time.monotonic() + 10)
+            return None
+        except Exception as e:
+            if _cert_failure(e):
+                return UNTRUSTED_CERT
+        finally:
+            c.close()
+    return UNREACHABLE_CERT
 
 
 def execute_module(key, ctx_args, timeout, stage_deadline=None, run_ctx=None):
@@ -177,7 +186,7 @@ def _gate(db, job_id, worker):
     return "blocked" if row.status != "active" else None
 
 
-def _end(db, job, worker, state, module_state, detail, excluded=()):
+def _end(db, job, worker, state, module_state, detail, excluded=(), seen=()):
     ok = db.execute(update(Job).where(Job.id == job.id, Job.lease_owner == worker, Job.state.in_(ACTIVE))
                     .values(state=state, ended_at=func.now(), lease_expires_at=None)).rowcount
     if ok:
@@ -186,7 +195,7 @@ def _end(db, job, worker, state, module_state, detail, excluded=()):
                        .values(state=module_state, detail=detail, ended_at=func.now()))
         db.execute(update(Worker).where(Worker.name == worker).values(current_job_id=None))
         if job.retest_of and state in ("completed", "completed-warnings", "failed"):
-            reconcile(db, job, excluded)  # same transaction as the end state
+            reconcile(db, job, excluded, seen)  # same transaction as the end state
         record(db, "system", "job", state, job.display_id, "failure" if state in ("failed", "blocked") else "success",
                detail or f"Job {state}")
     db.commit()
@@ -207,7 +216,7 @@ def run_job(job_id, worker, halt, resolver=socket.getaddrinfo):
         args["internal"] = internal
         args["internal_hosts"] = {} if internal is False else {p.host: internal}
         keys = list(db.scalars(select(ModuleRun.key).where(ModuleRun.job_id == job_id).order_by(ModuleRun.id)))
-        states, run_ctx, engine_down, bad_cert = [], {"profile": job.profile, "notes": a.notes or "", "wordlists": list(job.wordlists or [])}, False, False
+        states, run_ctx, engine_down, bad_cert = [], {"profile": job.profile, "notes": a.notes or "", "wordlists": list(job.wordlists or [])}, False, None
         if "auth" in keys:
             load_accounts(db, a, run_ctx, job.credential_ids or ())
         limits = db.scalar(select(SchedulerConfig.profile_limits).where(SchedulerConfig.id == 1)) or {}
@@ -227,7 +236,7 @@ def run_job(job_id, worker, halt, resolver=socket.getaddrinfo):
                 return _end(db, job, worker, why, why, "Cancelled before it started" if why == "cancelled"
                             else "The assessment is no longer approved for scanning")
             if key in ENGINE_MODULES and key in MODULES and not engine_down and not bad_cert and "session" not in run_ctx:
-                bad_cert = untrusted_cert(args)
+                bad_cert = untrusted_cert(args)  # None or the detail
             if key in ENGINE_MODULES and key in MODULES and not engine_down and not bad_cert and "session" not in run_ctx:
                 try:
                     s = stack.enter_context(stages.EngineSession(job, a, scope, ttl_s=(budget_s * 60 if budget_s else 3600) + 120))
@@ -237,7 +246,7 @@ def run_job(job_id, worker, halt, resolver=socket.getaddrinfo):
             if key not in MODULES:
                 state, detail, found, tool, untested = "unavailable", "Not available in this release", [], None, 0
             elif key in ENGINE_MODULES and bad_cert:
-                state, detail, found, tool, untested = "failed", UNTRUSTED_CERT, [], None, 0
+                state, detail, found, tool, untested = "failed", bad_cert, [], None, 0
             elif key in ENGINE_MODULES and engine_down:
                 state, detail, found, tool, untested = "unavailable", ENGINE_DOWN, [], None, 0
             else:
@@ -263,7 +272,7 @@ def run_job(job_id, worker, halt, resolver=socket.getaddrinfo):
             if not done:
                 db.rollback()
                 return
-            store_findings(db, job, a, key, found)
+            store_findings(db, job, a, key, found, run_ctx.setdefault("seen", set()))
             if key == "exposed":  # cval re-checks these; access records its own suspects
                 run_ctx.setdefault("suspects", []).extend({"module": key, "draft": d, "method": "GET", "url": d.location["url"],
                                                            "owner": None, "who": None, "form": None}
@@ -277,7 +286,7 @@ def run_job(job_id, worker, halt, resolver=socket.getaddrinfo):
             return
         if why:
             return _end(db, job, worker, why, why, None)
-        _end(db, job, worker, final_state(states), None, "", run_ctx.get("excluded", ()))
+        _end(db, job, worker, final_state(states), None, "", run_ctx.get("excluded", ()), run_ctx.get("seen", ()))
 
 
 def engine_ok() -> bool:

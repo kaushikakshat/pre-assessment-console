@@ -226,3 +226,23 @@ def test_engine_modules_honour_untrusted_cert_decision(setup, monkeypatch, allow
         assert mods["crawl"][0] == "completed" and opened
     else:
         assert mods["crawl"] == ("failed", wm.UNTRUSTED_CERT) and not opened and state == "completed-warnings"
+
+
+def test_cert_probe_fails_closed_after_one_retry(setup, monkeypatch):
+    import httpx
+    w, aid, uid, fakes = setup
+    calls = []
+
+    class Probe:
+        def __init__(self, *a, **kw): pass
+        def get(self, url, **kw):
+            calls.append(1)
+            raise httpx.ConnectTimeout("slow")
+        def close(self): pass
+
+    fakes["crawl"] = lambda ctx: ModuleResult("completed", "ok")
+    monkeypatch.setattr(wm, "SafeClient", Probe)
+    jid = add_job(aid, uid, modules=("reach", "crawl"))
+    claim(w)
+    run(jid, w)
+    assert snapshot(jid)[1]["crawl"] == ("failed", wm.UNREACHABLE_CERT) and len(calls) == 2
