@@ -1,0 +1,9 @@
+.superpowers/
+.env
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+dist/
+.DS_Store
+.pytest_cache/
