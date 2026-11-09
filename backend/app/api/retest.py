@@ -6,7 +6,8 @@ from app.api.catalog import QUICK
 from app.api.jobs import JobIn, _choose_modules, enqueue
 from app.core import security as sec
 from app.db import get_db
-from app.models import Credential, Finding, Job
+from app.models import Credential, Finding, Job, SchedulerConfig, Wordlist
+from app.worker.modules import wordlists as wl
 from app.scheduler.admission import ENGINE_MODULES
 
 router = APIRouter()
@@ -36,6 +37,8 @@ def retest(aid: str, body: RetestIn, user=Depends(sec.current_user), db=Depends(
         raise err("finding_ids", "False positives and accepted risks cannot be retested. Reopen them first.")
     prod = a.env == "Production"
     kept = [f for f in found if not prod or f.module in QUICK]  # the rest become Not retested in the worker
+    if not kept:
+        raise err("finding_ids", "These findings need checks that Production targets do not allow.")
     creds = sorted(db.scalars(select(Credential.display_id).where(
         Credential.id.in_([f.credential_id for f in kept if f.credential_id]), Credential.deleted_at.is_(None))))
     mods = {f.module for f in kept}
@@ -48,6 +51,12 @@ def retest(aid: str, body: RetestIn, user=Depends(sec.current_user), db=Depends(
     origin = [] if prod else db.scalars(select(Job).where(Job.id.in_({f.job_id for f in kept}))).all()
     profile = next((p for p in ("deep", "pre") if any(j.profile == p for j in origin)), None)
     lists = sorted({w for f in kept if f.module in WORDLIST_MODULES for j in origin if j.id == f.job_id for w in j.wordlists or []})
-    body_jobs = JobIn(modules=["reach", *sorted(mods)], credential_ids=creds, profile=profile, wordlists=lists if profile else [])
+    # Unavailable or over-cap lists are dropped, never refused; the worker marks the findings that depended on them Not retested.
+    live = {w.key: w.lines for w in db.scalars(select(Wordlist).where(Wordlist.key.in_(lists), Wordlist.enabled))}
+    lists = sorted(live) if profile else []
+    cap = (db.scalar(select(SchedulerConfig.profile_limits).where(SchedulerConfig.id == 1)) or {}).get(profile, {}).get("request_cap", 0)
+    while lists and wl.estimate(db, lists) > cap:
+        lists.remove(max(lists, key=live.get))
+    body_jobs = JobIn(modules=["reach", *sorted(mods)], credential_ids=creds, profile=profile, wordlists=lists)
     return enqueue(db, user, a, key, _choose_modules(body_jobs, a.env), body_jobs, what="Retest",
                    type="retest", retest_of=ids, profile=profile)

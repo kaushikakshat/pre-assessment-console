@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 
 from app.core.audit import record
-from app.models import Credential, Finding, ModuleRun
+from app.models import Credential, Finding, Job, ModuleRun, Wordlist
 from app.scheduler.admission import ENGINE_MODULES
 
 def _line(f, text):
@@ -42,7 +42,13 @@ def reconcile(db, job, excluded=(), seen=()) -> None:
                 _set(db, f, "not-retested", f"Not observed in {job.display_id}, which did not target it")
             continue
         cred = creds.get(f.credential_id)
-        if f.module not in runs:
+        origin = db.get(Job, f.job_id) if f.module in ("exposed", "dast") else None  # unobserved, so still its originating job
+        lost = [w for w in (origin.wordlists if origin else None) or [] if w not in (job.wordlists or [])]
+        if lost:
+            usable = set(db.scalars(select(Wordlist.key).where(Wordlist.key.in_(lost), Wordlist.enabled)))
+            why = ("the wordlist used originally is no longer available" if len(usable) < len(lost)
+                   else "the original wordlist selection exceeds the current request limit")
+        elif f.module not in runs:
             why = f"the {f.module} check could not run in this retest"
         elif f.credential_id and (cred is None or cred[1] is not None):
             why = "the account it was found with was removed"

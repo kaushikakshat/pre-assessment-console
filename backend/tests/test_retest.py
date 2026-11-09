@@ -184,3 +184,51 @@ def test_retest_resolved_unverifiable_and_missing_module(world, monkeypatch):  #
     assert state == "resolved" and "could not verify: the headers check did not complete" in hist[-1]
     state, hist, _ = get(other)
     assert state == "not-retested" and "crawl check could not run" in hist[-1]
+
+
+def test_retest_drops_unavailable_wordlists_and_marks_not_retested(world, monkeypatch):  # noqa: F811
+    c, a, aid, uid = world
+    with SessionLocal() as db, db.begin():
+        db.merge(Wordlist(key="Discovery/off.txt", category="discovery", label="off", lines=10, enabled=False))
+        db.merge(Wordlist(key="Discovery/ok.txt", category="discovery", label="ok", lines=10))
+    with engine.begin() as cn:
+        cn.execute(text("UPDATE jobs SET profile='pre', wordlists='[\"Discovery/off.txt\", \"Discovery/ok.txt\"]' WHERE id=:i"),
+                   {"i": first_job(aid, uid)})
+    with SessionLocal() as db:
+        origin = db.query(Job).order_by(Job.id.desc()).first().id
+    fid = add_finding(aid, origin, module="exposed")
+    assert retest(c, a, [fid]).status_code == 202
+    with SessionLocal() as db:
+        assert db.query(Job).filter_by(type="retest").one().wordlists == ["Discovery/ok.txt"]
+    (w,) = workers(1)
+    run_retest(w, monkeypatch, [], exposed=lambda ctx: ModuleResult("completed", "ok"))
+    state, hist, _ = get(fid)
+    assert state == "not-retested" and "no longer available" in hist[-1]
+
+
+def test_retest_over_cap_drops_largest_list(world, monkeypatch):  # noqa: F811
+    c, a, aid, uid = world
+    with SessionLocal() as db, db.begin():
+        db.merge(Wordlist(key="Discovery/big.txt", category="discovery", label="big", lines=10_000_000))
+        db.merge(Wordlist(key="Discovery/ok.txt", category="discovery", label="ok", lines=10))
+    with engine.begin() as cn:
+        cn.execute(text("UPDATE jobs SET profile='pre', wordlists='[\"Discovery/big.txt\", \"Discovery/ok.txt\"]' WHERE id=:i"),
+                   {"i": first_job(aid, uid)})
+    with SessionLocal() as db:
+        origin = db.query(Job).order_by(Job.id.desc()).first().id
+    fid = add_finding(aid, origin, module="exposed")
+    assert retest(c, a, [fid]).status_code == 202
+    with SessionLocal() as db:
+        assert db.query(Job).filter_by(type="retest").one().wordlists == ["Discovery/ok.txt"]
+    (w,) = workers(1)
+    run_retest(w, monkeypatch, [], exposed=lambda ctx: ModuleResult("completed", "ok"))
+    assert "exceeds the current request limit" in get(fid)[1][-1]
+
+
+def test_production_retest_of_only_non_quick_findings_422(world):  # noqa: F811
+    c, a, aid, uid = world
+    fid = add_finding(aid, first_job(aid, uid), module="crawl")
+    with engine.begin() as cn:
+        cn.execute(text("UPDATE assessments SET env='Production' WHERE id=:i"), {"i": aid})
+    r = retest(c, a, [fid])
+    assert r.status_code == 422 and r.json()["detail"]["fields"]["finding_ids"] == "These findings need checks that Production targets do not allow."
