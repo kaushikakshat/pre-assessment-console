@@ -4,7 +4,7 @@ not the login page and (for pages) looks like the owner's copy is a suspected fi
 shortcut: recorded state-changing requests have no stored owner response, so they are judged on the response alone
 (no error marker, or a redirect away from login), reported medium/suspected and never auto-confirmed by cval."""
 import re
-from urllib.parse import unquote, urlencode
+from urllib.parse import unquote, urlencode, urljoin, urlsplit
 
 import httpx
 
@@ -17,11 +17,13 @@ from . import auth
 from .base import REFS, FindingDraft, ModuleResult, location, looks_blocked
 
 _LOGIN_FORM = re.compile(r"(?i)<input[^>]+type\s*=\s*[\"']?password")
-_DENIED = re.compile(r"(?i)forbidden|not allowed|no permission|access denied|unauthori[sz]ed|invalid|csrf|token|expired|required|error|failed")
+_DENIED = re.compile(r"(?i)forbidden|not allowed|no permission|access denied|unauthori[sz]ed|invalid (csrf|token|request)"
+                     r"|csrf token|session (has )?expired|please log ?in|is required")
+_HIDDEN = re.compile(r"(?is)<script\b.*?</script>|<style\b.*?</style>|<!--.*?-->|<input[^>]*type\s*=\s*[\"']?hidden[^>]*>")
+_FORM = re.compile(r"(?is)<form\b([^>]*)>")
 _LOGIN_LOC = re.compile(r"(?i)log-?in|sign-?in|/auth")
 REDACTED = "[REDACTED]"
 FAILS = (httpx.HTTPError, OSError, BlockedAddress)
-FIELDS = ("title", "asset", "description", "impact", "reproduce", "evidence")
 
 
 def excluded(rc, url) -> bool:
@@ -39,35 +41,63 @@ def probe(ctx, method, url, cookie, form=None):
     return r
 
 
-def logged_out(rc, r) -> bool:
-    lo = rc.get("logged_out")
-    return bool((lo and lo in r.text) or _LOGIN_FORM.search(r.text))
+def visible(text) -> str:
+    """What a person sees first: the title plus the first 1,500 characters of text (no tags, attributes, scripts, hidden inputs)."""
+    t = re.search(r"(?is)<title[^>]*>(.*?)</title>", text)
+    body = re.sub(r"\s+", " ", re.sub(r"<[^>]*>", " ", _HIDDEN.sub(" ", text)))
+    return (t.group(1) if t else "") + " " + body[:1500]
 
 
-def reached(rc, r, base=None, method="GET") -> bool:
+def denied(text) -> bool:
+    return bool(_DENIED.search(visible(text)))
+
+
+def logged_out(rc, r, url=None) -> bool:
+    """The login page: the logged-out marker, or a password form that posts to the login URL (a change-password page is not it)."""
+    lo, login = rc.get("logged_out"), (rc.get("login") or {}).get("login_url")
+    if lo and lo in r.text:
+        return True
+    if not _LOGIN_FORM.search(r.text) or not login:
+        return False
+    for attrs in _FORM.findall(r.text):
+        m = re.search(r"""(?i)action\s*=\s*["']?([^"'\s>]*)""", attrs)
+        target = urljoin(url or login, m.group(1)) if m and m.group(1) else (url or "")
+        if urlsplit(target).path == urlsplit(login).path:
+            return True
+    return False
+
+
+def reached(rc, r, base=None, method="GET", url=None) -> bool:
     """GET: 2xx, not the login page, no denial the owner's copy lacks, similar size and content.
     Other methods (no owner copy): a redirect away from login, or a 2xx without any error marker."""
     if method != "GET":
         if 300 <= r.status_code < 400:
             return not _LOGIN_LOC.search(r.headers.get("location", ""))
-        return 200 <= r.status_code < 300 and not logged_out(rc, r) and not _DENIED.search(r.text)
-    if not 200 <= r.status_code < 300 or logged_out(rc, r):
+        return 200 <= r.status_code < 300 and not logged_out(rc, r, url) and not denied(r.text)
+    if not 200 <= r.status_code < 300 or logged_out(rc, r, url):
         return False
     if base is None:
-        return not _DENIED.search(r.text)
+        return not denied(r.text)
     if not base.content.strip() or len(r.content) < 0.5 * len(base.content):
         return False
-    if _DENIED.search(r.text) and not _DENIED.search(base.text):
+    if denied(r.text) and not denied(base.text):
         return False
     return same_page(base.content, r.content) >= SAME
 
 
 def scrub(text, secret):
-    """Account secrets out of stored text: case-insensitive; values under 3 chars only as whole tokens."""
-    for s in sorted(secret, key=len, reverse=True):
-        rx = re.escape(s) if len(s) >= 3 else rf"(?<![\w]){re.escape(s)}(?![\w])"
+    """Account secrets out of echoed page content: case-insensitive; values under 3 chars only as whole tokens."""
+    for v in sorted(secret, key=len, reverse=True):
+        rx = re.escape(v) if len(v) >= 3 else rf"(?<![\w]){re.escape(v)}(?![\w])"
         text = re.sub(rx, REDACTED, text, flags=re.I)
     return text
+
+
+_KEEP = re.compile(r"[A-Z]+ https?://|recorded as ")  # request lines carry the URL, not page content
+
+
+def scrub_evidence(ev, secret):
+    return "\n".join(ln if _KEEP.match(ln) else scrub(ln, secret) for ln in ev.split("\n"))
 
 
 def run(ctx) -> ModuleResult:
@@ -99,9 +129,9 @@ def run(ctx) -> ModuleResult:
         i = 0
         try:
             base = probe(ctx, "GET", url, sessions[a]) if m == "GET" else None
-            if m == "GET" and not reached(rc, base):
-                if logged_out(rc, base):  # the owner's session ended: this task is untested, try one fresh sign-in
-                    untested, lost = untested + 1, lost + 1
+            if m == "GET" and not reached(rc, base, url=url):
+                if logged_out(rc, base, url):  # the owner's session ended: this task is untested, try one fresh sign-in
+                    untested, lost = untested + max(1, len(bs)), lost + 1
                     if auth.relogin(ctx, a):
                         sessions[a] = rc["sessions"][a]
                     else:
@@ -109,7 +139,7 @@ def run(ctx) -> ModuleResult:
                 continue
             for i, b in enumerate(bs):
                 r = probe(ctx, m, url, sessions.get(b), form)
-                if not reached(rc, r, base, m) or (b, url, m) in seen:
+                if not reached(rc, r, base, m, url) or (b, url, m) in seen:
                     continue
                 seen.add((b, url, m))
                 title = f"{role(b)} can open a page meant for {role(a)}" if b else "Page reachable without signing in"
@@ -126,8 +156,7 @@ def run(ctx) -> ModuleResult:
                     "Someone without the right role may read data or perform actions meant for another role.",
                     ev, f"Sign in as {role(b) or 'no one'} and {m} {url}", "Check the access rule on the server for this page or action.",
                     [REFS["info"]], fingerprint_key=f"{m}|{url}|{b}")
-                for f in FIELDS:
-                    setattr(d, f, scrub(getattr(d, f), secret))
+                d.evidence = scrub_evidence(d.evidence, secret)  # description/impact are generated from URL and role only
                 out.append(d)
                 rc.setdefault("suspects", []).append({"module": "access", "draft": d, "method": m, "url": url, "form": form,
                                                       "owner": a, "who": b, "recheck": m == "GET"})

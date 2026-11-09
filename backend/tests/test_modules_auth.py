@@ -9,7 +9,6 @@ from app.worker import main as wm
 from app.models import Credential, LoginSetup
 from app.db import SessionLocal
 from app.targets.safe_http import SafeClient
-from app.targets.safe_http import SafeClient as _SC  # noqa: F401
 from app.worker.modules import access, auth, cval
 from app.worker.modules.base import Ctx
 from app.worker.similarity import SAME, same_page
@@ -202,6 +201,7 @@ def test_access_deadline_is_warning_with_untested(portal):
 def test_redacted_substring_and_scrub():
     assert access.scrub("User ALICE paid; ab x", {"alice", "ab"}) == "User [REDACTED] paid; [REDACTED] x"
     assert access.scrub("cab", {"ab"}) == "cab"
+    assert access.scrub_evidence("GET http://h/admin/panel\n\nHello admin", {"admin"}) == "GET http://h/admin/panel\n\nHello [REDACTED]"
 
 
 def test_redacted_in_url_or_value_not_replayed(portal):
@@ -217,3 +217,31 @@ def test_safe_client_keeps_no_cookies(portal):
         r = c.request("POST", base + "/login", data=b"csrf=tok-123&u=boss&p=Secret%21pw")
         assert "sid=admin" in r.headers["set-cookie"]
         assert c.get(base + "/admin/panel").text == "Please sign in"
+
+
+def test_access_scrub_keeps_urls_and_titles_with_admin_user(portal):
+    ctx, base = signed(portal[0])
+    ctx.run_ctx["accounts"] = [("C-0001", "User", crypto.seal("alice"), crypto.seal("password")),
+                               ("C-0002", "Admin", crypto.seal("admin"), crypto.seal("password"))]  # sessions already open
+    ctx.run_ctx["pages"]["C-0002"] |= {base + "/leaky"}
+    ctx.run_ctx["requests"] = {"C-0002": [("POST", base + "/admin/lax", {"to": "x"})]}
+    r = access.run(ctx)
+    f = next(f for f in r.findings if f.location["method"] == "POST")
+    g = next(f for f in r.findings if f.location["method"] == "GET")
+    assert f.asset == base + "/admin/lax" and f.title.startswith(("Admin", "User", "Action")) and "[REDACTED]" not in f.title + f.reproduce
+    assert "GET " + g.asset in g.evidence and "Welcome [REDACTED] and boss" in g.evidence
+
+
+def test_denial_judged_on_visible_phrases_only(portal):
+    ctx, base = signed(portal[0])
+    ctx.run_ctx["pages"] = {None: set(), "C-0001": set(), "C-0002": set()}
+    ctx.run_ctx["requests"] = {"C-0002": [("POST", base + "/admin/menu", {"a": "1"}), ("POST", base + "/admin/csrf", {"a": "1"})]}
+    r = access.run(ctx)
+    assert {f.asset.rsplit("/", 1)[1] for f in r.findings} == {"menu"}  # hidden csrf_token input + "Error log" menu: flagged
+
+
+def test_change_password_page_is_not_a_login_page(portal):
+    ctx, base = signed(portal[0])
+    ctx.run_ctx["pages"]["C-0002"] |= {base + "/account"}
+    r = access.run(ctx)
+    assert any(f.asset.endswith("/account") for f in r.findings)

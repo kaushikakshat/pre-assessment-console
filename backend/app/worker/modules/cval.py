@@ -15,7 +15,7 @@ def _repro(ctx, s, sessions) -> bool:
         r = access.probe(ctx, "GET", url, None)
         return bool(sig) and r.status_code == 200 and sig[0](r.content)
     base = access.probe(ctx, "GET", url, sessions[s["owner"]]) if m == "GET" else None
-    return access.reached(rc, access.probe(ctx, m, url, sessions.get(s["who"]), s["form"]), base)
+    return access.reached(rc, access.probe(ctx, m, url, sessions.get(s["who"]), s["form"]), base, url=url)
 
 
 def run(ctx) -> ModuleResult:
