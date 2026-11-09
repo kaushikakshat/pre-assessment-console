@@ -1,5 +1,6 @@
 """Scan worker: registers, heartbeats, reaps expired leases, claims one job at a time through the DB gate and
 runs its modules sequentially in a thread while the main thread keeps the lease alive."""
+import contextlib
 import hashlib
 import logging
 import os
@@ -16,9 +17,11 @@ from sqlalchemy.dialects.postgresql import insert
 from app.core.audit import record
 from app.core import crypto
 from app.core.startup import validate_env
+from app.engine import stages
+from app.engine.zap import EngineDown
 from app.db import SessionLocal
-from app.models import Assessment, Finding, Job, ModuleRun, PolicyVersion, Worker
-from app.scheduler.admission import ACTIVE, claim_next, heartbeat, reap_expired
+from app.models import Assessment, Finding, Job, ModuleRun, PolicyVersion, SchedulerConfig, Worker
+from app.scheduler.admission import ACTIVE, ENGINE_MODULES, claim_next, heartbeat, reap_expired
 from app.targets import ipguard
 from app.targets.safe_http import BlockedAddress, RequestCapExceeded, SafeClient, ScopeError
 from app.targets.validate import _internal, first_rule, parse_target
@@ -46,7 +49,7 @@ def store_findings(db, job, assessment, module, drafts):
     for d in drafts:
         for f in ("title", "asset", "description", "impact", "reproduce", "remediation"):
             setattr(d, f, redact(getattr(d, f)))  # header values reach these fields too
-        fp = hashlib.sha256(f"{module}|{d.title}|{d.asset}".encode()).hexdigest()
+        fp = hashlib.sha256(f"{module}|{d.fingerprint_key or f'{d.title}|{d.asset}'}".encode()).hexdigest()
         old = db.scalar(select(Finding).where(Finding.assessment_id == assessment.id, Finding.fingerprint == fp))
         if old:
             old.last_seen_at, old.job_id = func.now(), job.id
@@ -70,24 +73,32 @@ def _internal_allowance(a, policy, resolver):
         return False
 
 
-def execute_module(key, ctx_args, timeout):
-    """-> (state, detail, findings, tool_version). Never raises; every failure is plain and never 'completed'."""
+ENGINE_DOWN = "The scanning engine is not running."
+
+
+def execute_module(key, ctx_args, timeout, stage_deadline=None, run_ctx=None):
+    """-> (state, detail, findings, tool_version, untested). Never raises; every failure is plain and never 'completed'.
+    stage_deadline (absolute monotonic) caps the module's own timeout; run_ctx is shared across the job's modules."""
     client = SafeClient({ctx_args["host"]}, ctx_args["internal_hosts"], max_requests=REQUEST_CAP,
                         resolver=ctx_args["resolver"])
+    deadline = time.monotonic() + timeout
     ctx = Ctx(**{k: v for k, v in ctx_args.items() if k != "internal_hosts"}, client=client,
-              deadline=time.monotonic() + timeout)
+              deadline=min(deadline, stage_deadline) if stage_deadline else deadline,
+              run_ctx=run_ctx if run_ctx is not None else {})
     try:
         r = MODULES[key](ctx)
-        return r.state, r.detail, r.findings, r.tool_version
+        return r.state, r.detail, r.findings, r.tool_version, r.untested
+    except EngineDown:
+        return "unavailable", ENGINE_DOWN, [], None, 0
     except Blocked:
-        return "inconclusive", "Target rate-limited or blocked the requests", [], None
+        return "inconclusive", "Target rate-limited or blocked the requests", [], None, 0
     except (TimeoutError, RequestCapExceeded):
-        return "inconclusive", "The check ran out of time or request budget before it finished.", [], None
+        return "inconclusive", "The check ran out of time or request budget before it finished.", [], None, 0
     except (httpx.HTTPError, OSError, BlockedAddress, ScopeError):
-        return "failed", "Could not connect to the target.", [], None
+        return "failed", "Could not connect to the target.", [], None, 0
     except Exception:
         log.exception("module %s crashed", key)
-        return "failed", "The check could not be completed.", [], None
+        return "failed", "The check could not be completed.", [], None, 0
     finally:
         client.close()
 
@@ -119,7 +130,7 @@ def _end(db, job, worker, state, module_state, detail):
 
 def run_job(job_id, worker, halt, resolver=socket.getaddrinfo):
     """halt: set on SIGTERM or lost lease; the job is then left for the lease to expire (never marked done)."""
-    with SessionLocal() as db:
+    with SessionLocal() as db, contextlib.ExitStack() as stack:  # stack closes the engine session on every exit
         job, a = db.get(Job, job_id), None
         a = db.get(Assessment, job.assessment_id)
         pv = db.get(PolicyVersion, job.policy_version or a.policy_version) if (job.policy_version or a.policy_version) else None
@@ -132,7 +143,11 @@ def run_job(job_id, worker, halt, resolver=socket.getaddrinfo):
         args["internal"] = internal
         args["internal_hosts"] = {} if internal is False else {p.host: internal}
         keys = list(db.scalars(select(ModuleRun.key).where(ModuleRun.job_id == job_id).order_by(ModuleRun.id)))
-        states = []
+        states, run_ctx, engine_down, stage = [], {}, False, None
+        limits = db.scalar(select(SchedulerConfig.profile_limits).where(SchedulerConfig.id == 1)) or {}
+        budget = stages.Budget(limits[job.profile]["budget_min"] * 60) if job.profile in limits else None
+        scope = {"hosts": {p.host}, "ports": args["permitted_ports"],
+                 "internal": {h: None if n is None else [str(x) for x in n] for h, n in args["internal_hosts"].items()}}
         for key in keys:
             if halt.is_set():
                 return
@@ -142,19 +157,34 @@ def run_job(job_id, worker, halt, resolver=socket.getaddrinfo):
             if why:
                 return _end(db, job, worker, why, why, "Cancelled before it started" if why == "cancelled"
                             else "The assessment is no longer approved for scanning")
+            if key in ENGINE_MODULES and key in MODULES and not engine_down and "session" not in run_ctx:
+                try:
+                    s = stack.enter_context(stages.EngineSession(job, a, scope))
+                    run_ctx.update(session=s, zap=s.zap, exclude=s.exclude)
+                except EngineDown:
+                    engine_down = True
             if key not in MODULES:
-                state, detail, found, tool = "unavailable", "Not available in this release", [], None
+                state, detail, found, tool, untested = "unavailable", "Not available in this release", [], None, 0
+            elif key in ENGINE_MODULES and engine_down:
+                state, detail, found, tool, untested = "unavailable", ENGINE_DOWN, [], None, 0
             else:
                 db.execute(update(ModuleRun).where(ModuleRun.job_id == job_id, ModuleRun.key == key,
                                                    ModuleRun.state == "queued").values(state="running", started_at=func.now()))
                 db.commit()
-                state, detail, found, tool = execute_module(key, args, TIMEOUTS.get(key, DEFAULT_TIMEOUT))
+                timeout, sd = TIMEOUTS.get(key, DEFAULT_TIMEOUT), None
+                st = stages.MODULE_STAGE.get(key) if budget else None
+                if st:
+                    if stage and stage != st:
+                        budget.end(stage)
+                    stage, sd = st, budget.start(st)
+                    timeout = max(0.0, sd - time.monotonic())  # staged modules run to their stage deadline
+                state, detail, found, tool, untested = execute_module(key, args, timeout, sd, run_ctx)
             if halt.is_set():
                 return
             # Guarded on state='running' (or queued for unavailable): a reaped job's module is no longer ours to write.
             done = db.execute(update(ModuleRun).where(ModuleRun.job_id == job_id, ModuleRun.key == key,
                                                       ModuleRun.state.in_(("running", "queued")))
-                              .values(state=state, detail=detail, tool_version=tool, ended_at=func.now(),
+                              .values(state=state, detail=detail, tool_version=tool, untested=untested, ended_at=func.now(),
                                       started_at=func.coalesce(ModuleRun.started_at, func.now()))).rowcount
             if not done:
                 db.rollback()

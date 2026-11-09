@@ -36,6 +36,7 @@ class FindingDraft:
     reproduce: str
     remediation: str
     references: list = field(default_factory=list)
+    fingerprint_key: str | None = None  # stable identity when title/asset would drift (engine alerts)
 
 
 @dataclass
@@ -44,6 +45,7 @@ class ModuleResult:
     detail: str
     findings: list = field(default_factory=list)
     tool_version: str | None = None
+    untested: int = 0  # work the module could not reach (deadline); shown as Not tested
 
 
 def location(ctx, kind, path=None, port=None, method=None, component=None, param=None, url=None):
@@ -77,6 +79,7 @@ class Ctx:
     internal: object = False  # False: none, None: any private, else allowed ranges (as in SafeClient)
     resolver: object = socket.getaddrinfo  # resolver/guard are test injection points only
     guard: object = default_guard
+    run_ctx: dict = field(default_factory=dict)  # shared by one job's modules (zap client, crawl output, accounts)
 
     def get(self, path=None):
         r = self.client.get(urljoin(self.url, path) if path else self.url, deadline=self.deadline)
