@@ -37,6 +37,7 @@ class FindingDraft:
     remediation: str
     references: list = field(default_factory=list)
     fingerprint_key: str | None = None  # stable identity when title/asset would drift (engine alerts)
+    credential_id: str | None = None  # display id of the account the finding was seen with
 
 
 @dataclass

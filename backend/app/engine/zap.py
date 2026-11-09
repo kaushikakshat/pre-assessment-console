@@ -99,11 +99,27 @@ class Zap:
                 return pct
             time.sleep(self.poll)
 
-    def spider(self, url, context_id, max_children, deadline) -> list[str]:
+    def spider(self, url, context_id, max_children, deadline) -> tuple[list[str], list[str], int]:
+        """-> (urls found in scope, urls the spider saw out of scope, percent finished)."""
         sid = self._field(self._call("action", "spider/action/scan", url=url, maxChildren=max_children, recurse="true",
                                      contextName=self._ctx[context_id], subtreeOnly="true"), "scan", "spider scan")
-        self._wait("spider", sid, deadline)
-        return self._field(self._call("view", "spider/view/results", scanId=sid), "results", "spider results")
+        pct = self._wait("spider", sid, deadline)
+        urls = self._field(self._call("view", "spider/view/results", scanId=sid), "results", "spider results")
+        full = self._call("view", "spider/view/fullResults", scanId=sid).get("fullResults") or [{}]
+        return urls, [u for u in (full[0].get("urlsOutOfScope") or []) if isinstance(u, str)], pct
+
+    def messages(self, base_url, start=0) -> list[dict]:
+        """History messages for base_url from index start (ZAP numbers them per base_url filter)."""
+        out = []
+        while True:
+            page = self._field(self._call("view", "core/view/messages", baseurl=base_url, start=start, count=500), "messages", "messages")
+            out += page
+            if len(page) < 500:
+                return out
+            start += 500
+
+    def message_count(self, base_url) -> int:
+        return int(self._field(self._call("view", "core/view/numberOfMessages", baseurl=base_url), "numberOfMessages", "numberOfMessages"))
 
     def import_openapi(self, url, context_id) -> int:
         r = self._call("action", "openapi/action/importUrl", url=url, contextId=context_id)

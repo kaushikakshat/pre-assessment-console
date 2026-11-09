@@ -122,7 +122,8 @@ def test_connect_rebinding_refused(echo):
     assert st.allowed("target.test", echo) == ("93.184.216.34", None)
     assert connect(pp, f"target.test:{echo}").startswith(b"HTTP/1.1 403")
     assert st.refused == 1
-    assert json.loads(control(cp, "GET", "/stats")[1]) == {"job_id": "j", "connections": 1, "refused": 1}
+    assert json.loads(control(cp, "GET", "/stats")[1]) == {"job_id": "j", "connections": 1, "refused": 1, "recent_refused": [
+        {"host": "target.test", "port": echo, "reason": "destination refused: " + st.recent_refused[0]["reason"].split(": ", 1)[1]}]}
 
 
 def test_plain_http_out_of_scope_refused(echo):
@@ -269,3 +270,17 @@ def test_delete_for_other_job_is_a_noop_and_ttl_expires_scope():
     assert not st.active and json.loads(control(cp, "GET", "/stats")[1])["job_id"] is None
     assert control(cp, "PUT", "/scope", {**body, "ttl_s": -1})[0] == 400
     assert control(cp, "PUT", "/scope", body)[0] == 204 and control(cp, "DELETE", "/scope?job_id=j")[0] == 204 and not st.active
+
+
+def test_refusals_logged_and_listed_without_paths(echo, caplog):
+    import logging
+    caplog.set_level(logging.INFO, logger="egress")
+    st = EgressState(lambda host, port, **kw: [(2, 1, 6, "", ("93.184.216.34", 0))])
+    st.set_scope("j", {"target.test"}, {echo}, {})
+    pp, cp = start(st)
+    assert connect(pp, "other.test:80").startswith(b"HTTP/1.1 403")
+    assert connect(pp, f"target.test:{echo + 1}").startswith(b"HTTP/1.1 403")
+    got = json.loads(control(cp, "GET", "/stats")[1])["recent_refused"]
+    assert got == [{"host": "other.test", "port": 80, "reason": "host out of scope"},
+                   {"host": "target.test", "port": echo + 1, "reason": "port not permitted"}]
+    assert "refused host=other.test port=80 reason=host out of scope" in caplog.text

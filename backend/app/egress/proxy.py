@@ -1,6 +1,9 @@
 """Forward proxy that is the only way out for the scan engine. Every connection is resolved, guarded (Phase 2
 ipguard + internal-range rules) and pinned to the checked IP; the hostname is never resolved a second time."""
 import asyncio
+import collections
+import logging
+import re
 import hmac
 import ipaddress
 import json
@@ -16,6 +19,7 @@ CONNECT_TIMEOUT = 10
 MAX_HEAD = 65536
 MAX_CONNS = 64
 MAX_CONTROL_BODY = 65536
+log = logging.getLogger("egress")
 _DENY = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
 
 
@@ -27,6 +31,7 @@ class EgressState:
         self._lock = threading.RLock()  # allowed() runs in worker threads; control handlers run on the loop
         self._conns: set = set()  # writers of live tunnels (event-loop only)
         self.active, self.job_id, self.connections, self.refused = False, None, 0, 0
+        self.recent_refused = collections.deque(maxlen=20)
         self.hosts, self.ports, self.internal, self.expires = set(), set(), {}, None
 
     def set_scope(self, job_id, hosts, ports, internal, ttl_s=None):
@@ -53,6 +58,7 @@ class EgressState:
             self.expires = None if ttl_s is None else time.monotonic() + ttl_s  # self-expiring if the worker dies
             self.hosts, self.ports, self.internal = new_hosts, new_ports, new_internal
             self.connections = self.refused = 0
+            self.recent_refused.clear()
         self.close_all()
 
     def clear(self, job_id=None):
@@ -76,7 +82,8 @@ class EgressState:
 
     def stats(self):
         with self._lock:
-            return {"job_id": self.job_id, "connections": self.connections, "refused": self.refused}
+            return {"job_id": self.job_id, "connections": self.connections, "refused": self.refused,
+                    "recent_refused": list(self.recent_refused)}
 
     def close_all(self):
         for w in list(self._conns):
@@ -89,6 +96,9 @@ class EgressState:
         with self._lock:
             if why:
                 self.refused += 1
+                h = re.sub(r"[^\w.:\[\]-]", "?", str(host)[:255])  # host only: never paths, queries or headers
+                self.recent_refused.append({"host": h, "port": port, "reason": why})
+                log.info("refused host=%s port=%s reason=%s", h, port, why)
             else:
                 self.connections += 1
         return ip, why

@@ -20,7 +20,7 @@ from app.core.startup import validate_env
 from app.engine import stages
 from app.engine.zap import EngineDown, EngineError
 from app.db import SessionLocal
-from app.models import Assessment, Finding, Job, ModuleRun, PolicyVersion, SchedulerConfig, Worker
+from app.models import Assessment, Credential, Finding, Job, ModuleRun, PolicyVersion, SchedulerConfig, Worker
 from app.scheduler.admission import ACTIVE, ENGINE_MODULES, claim_next, heartbeat, reap_expired
 from app.targets import ipguard
 from app.targets.safe_http import BlockedAddress, RequestCapExceeded, SafeClient, ScopeError
@@ -49,6 +49,7 @@ def store_findings(db, job, assessment, module, drafts):
     for d in drafts:
         for f in ("title", "asset", "description", "impact", "reproduce", "remediation"):
             setattr(d, f, redact(getattr(d, f)))  # header values reach these fields too
+        cred = db.scalar(select(Credential.id).where(Credential.display_id == d.credential_id)) if d.credential_id else None
         fp = hashlib.sha256(f"{module}|{d.fingerprint_key or f'{d.title}|{d.asset}'}".encode()).hexdigest()
         old = db.scalar(select(Finding).where(Finding.assessment_id == assessment.id, Finding.fingerprint == fp))
         if old:
@@ -58,7 +59,7 @@ def store_findings(db, job, assessment, module, drafts):
             db.add(Finding(assessment_id=assessment.id, job_id=job.id, module=module, severity=d.severity,
                            confidence=d.confidence, title=d.title, asset=d.asset, location=d.location,
                            description=d.description, impact=d.impact, evidence=redact(d.evidence), reproduce=d.reproduce,
-                           remediation=d.remediation, references=d.references, fingerprint=fp,
+                           remediation=d.remediation, references=d.references, fingerprint=fp, credential_id=cred,
                            history=[{"at": _now(), "by": "System", "text": f"Found in {job.display_id}"}]))
     db.flush()
 
@@ -145,7 +146,7 @@ def run_job(job_id, worker, halt, resolver=socket.getaddrinfo):
         args["internal"] = internal
         args["internal_hosts"] = {} if internal is False else {p.host: internal}
         keys = list(db.scalars(select(ModuleRun.key).where(ModuleRun.job_id == job_id).order_by(ModuleRun.id)))
-        states, run_ctx, engine_down = [], {}, False
+        states, run_ctx, engine_down = [], {"profile": job.profile, "notes": a.notes or ""}, False
         limits = db.scalar(select(SchedulerConfig.profile_limits).where(SchedulerConfig.id == 1)) or {}
         budget_s = limits.get(job.profile, {}).get("budget_min", {"pre": 30, "deep": 180}.get(job.profile)) if job.profile else None
         budget = stages.Budget(budget_s * 60, keys) if budget_s else None
