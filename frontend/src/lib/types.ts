@@ -43,7 +43,7 @@ export interface Validation { outcome: ValidationOutcome; checks: Check[]; norma
 export interface Approval { state: 'pending' | 'approved' | 'refused'; note: string | null; by: string | null; at: string | null; self: boolean }
 export interface Assessment {
   id: string; name: string; owner: { id: string; name: string }; target: string; env: Environment;
-  hosts: string; paths: string; ports: string; exclusions: string; notes: string | null;
+  hosts: string; paths: string; ports: string; exclusions: string; notes: string | null; allow_untrusted_cert: boolean;
   status: AssessmentStatus; validation: Validation | null; approval: Approval | null;
   active_job_id: string | null; created_at: string; updated_at: string; access: 'owner' | 'admin';
 }

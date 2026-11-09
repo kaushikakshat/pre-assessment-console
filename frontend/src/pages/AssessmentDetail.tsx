@@ -181,6 +181,7 @@ function Overview({ as, latest, findings }: { as: Assessment; latest?: Job; find
           <KeyValue items={[
             { label: 'Target', value: as.target, mono: true },
             { label: 'Environment', value: as.env },
+            { label: 'Untrusted certificate', value: as.allow_untrusted_cert ? 'Allowed (test environment)' : 'Not allowed' },
             { label: 'Hosts', value: as.hosts, mono: true },
             { label: 'Paths', value: as.paths, mono: true },
             { label: 'Ports', value: as.ports, mono: true },

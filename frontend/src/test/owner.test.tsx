@@ -15,7 +15,7 @@ const catalog = {
 };
 const assessment = {
   id: 'A-0001', name: 'Shop', owner: { id: 'U-001', name: 'Asha Rao' }, target: 'https://shop.example.com', env: 'Staging', hosts: 'shop.example.com', paths: '/*', ports: '443',
-  exclusions: '', notes: null, status: 'active', validation: { outcome: 'allowed', checks: [], normalized_target: 'https://shop.example.com/', policy_version: 'v1', decided_at: '2026-11-09T08:50:00Z' },
+  exclusions: '', notes: null, allow_untrusted_cert: false, status: 'active', validation: { outcome: 'allowed', checks: [], normalized_target: 'https://shop.example.com/', policy_version: 'v1', decided_at: '2026-11-09T08:50:00Z' },
   approval: null, active_job_id: null, created_at: '2026-11-09T08:00:00Z', updated_at: '2026-11-09T08:00:00Z', access: 'owner',
 };
 const finding = {
@@ -194,4 +194,41 @@ it('Approve my target requires a note and posts the decision', async () => {
   await user.type(dlg.getByLabelText(/Note/), 'Own staging site');
   await user.click(approve);
   await waitFor(() => expect(calls.find((c) => c.path === '/admin/approvals/A-0001')?.body).toEqual({ decision: 'approve', note: 'Own staging site' }));
+});
+
+describe('allow untrusted certificate', () => {
+  const draft = { ...assessment, status: 'draft', validation: null };
+  const allowed = { outcome: 'allowed', checks: [], normalized_target: 'https://shop.example.com/', policy_version: 'v1', decided_at: '2026-11-09T08:50:00Z' };
+
+  it('sends true when checked on create (default unchecked)', async () => {
+    const calls = mockApi({ '/catalog': catalog, '/queue': { capacity }, 'POST /assessments': json(201, draft), 'POST /assessments/A-0001/validate': json(200, allowed) });
+    const user = userEvent.setup();
+    mount('/assessments/new');
+    await user.type(await screen.findByLabelText(/Assessment name/), 'Shop');
+    await user.type(screen.getByLabelText(/Target URL/), 'https://shop.example.com');
+    const box = screen.getByLabelText('Allow untrusted certificate (test environments)') as HTMLInputElement;
+    expect(box.checked).toBe(false);
+    await user.click(box);
+    await user.click(screen.getByRole('button', { name: 'Validate target' }));
+    await waitFor(() => expect(calls.find((c) => c.method === 'POST' && c.path === '/assessments')?.body.allow_untrusted_cert).toBe(true));
+  });
+
+  it('prefills from the assessment and sends the value on PATCH', async () => {
+    const calls = mockApi({ '/assessments/A-0001': { ...assessment, allow_untrusted_cert: true }, '/catalog': catalog, '/queue': { capacity },
+      'PATCH /assessments/A-0001': json(200, draft), 'POST /assessments/A-0001/validate': json(200, allowed) });
+    const user = userEvent.setup();
+    mount('/assessments/new?from=A-0001');
+    const box = await screen.findByLabelText('Allow untrusted certificate (test environments)') as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    await user.click(box);
+    await user.click(screen.getByRole('button', { name: 'Validate target' }));
+    await waitFor(() => expect(calls.find((c) => c.method === 'PATCH')?.body.allow_untrusted_cert).toBe(false));
+  });
+
+  it.each([[true, 'Allowed (test environment)'], [false, 'Not allowed']])('overview row renders %s', async (v, text) => {
+    mockApi({ '/assessments/A-0001': { ...assessment, allow_untrusted_cert: v }, '/assessments/A-0001/jobs': [], '/assessments/A-0001/findings': [], '/queue': { capacity } });
+    mount('/assessments/A-0001');
+    expect(await screen.findByText('Untrusted certificate')).toBeTruthy();
+    expect(screen.getByText(text)).toBeTruthy();
+  });
 });

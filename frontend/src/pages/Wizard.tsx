@@ -25,11 +25,11 @@ export function effective(run: Run, x: Extras, wordlists: Wordlist[] = []): Extr
 }
 /** Fuzzing lists cost 10 requests per line, discovery lists 1 (matches the server). */
 export const estimate = (lists: string[], wordlists: Wordlist[] = []) => lists.reduce((n, k) => { const w = wordlists.find((l) => l.key === k); return n + (w ? w.lines * (w.category === 'fuzzing' ? 10 : 1) : 0); }, 0);
-interface Form { name: string; target: string; env: Environment; hosts: string; paths: string; ports: string; exclusions: string; notes: string }
+interface Form { name: string; target: string; env: Environment; hosts: string; paths: string; ports: string; exclusions: string; notes: string; allow_untrusted_cert: boolean }
 type Run = { mode: 'profile'; profile: ProfileKey } | { mode: 'modules'; modules: ModuleKey[] };
 
 const PROD_ONLY = 'Production targets can only be scanned with Quick Scan.';
-const EMPTY: Form = { name: '', target: '', env: 'Development', hosts: '', paths: '/*', ports: '443', exclusions: '', notes: '' };
+const EMPTY: Form = { name: '', target: '', env: 'Development', hosts: '', paths: '/*', ports: '443', exclusions: '', notes: '', allow_untrusted_cert: false };
 const STEPS = ['Target & scope', 'Scan configuration', 'Review & submit'];
 
 export function targetError(raw: string): string | null {
@@ -56,7 +56,7 @@ const forEnv = (run: Run, env: Environment, catalog: Catalog | null): Run => {
 };
 
 const hostOf = (t: string) => { try { return new URL(t.trim()).hostname; } catch { return ''; } };
-const fromAssessment = (a: Assessment): Form => ({ name: a.name, target: a.target, env: a.env, hosts: a.hosts, paths: a.paths, ports: a.ports, exclusions: a.exclusions, notes: a.notes ?? '' });
+const fromAssessment = (a: Assessment): Form => ({ name: a.name, target: a.target, env: a.env, hosts: a.hosts, paths: a.paths, ports: a.ports, exclusions: a.exclusions, notes: a.notes ?? '', allow_untrusted_cert: a.allow_untrusted_cert });
 
 /** /assessments/new[?from=A-…] starts at step 1; /assessments/:id/scan starts at step 2 for an allowed assessment. */
 export function Wizard() {
@@ -147,6 +147,9 @@ function WizardBody({ assessment: initial, scanRoute }: { assessment: Assessment
             <Select id="env" label="Environment" required value={form.env} onChange={set('env')} error={errors.env}>
               {ENVIRONMENTS.map((e) => <option key={e}>{e}</option>)}
             </Select>
+            <Checkbox checked={form.allow_untrusted_cert} onChange={(e) => setForm((f) => ({ ...f, allow_untrusted_cert: e.target.checked }))}
+              label="Allow untrusted certificate (test environments)" aria-describedby="cert-hint" />
+            <p id="cert-hint" className="field-hint">Use only for test or UAT sites with a self-signed or internal certificate. The certificate is still reported as a finding.</p>
             <TextField id="hosts" label="In-scope hostnames / IPs" required mono value={form.hosts} onChange={set('hosts')} error={errors.hosts} hint="Filled from the target if left empty." />
             <div className="f2">
               <TextField id="paths" label="In-scope paths" mono value={form.paths} onChange={set('paths')} error={errors.paths} />
