@@ -283,3 +283,8 @@ input[type="checkbox"], input[type="radio"] { width: 16px; height: 16px; margin:
   .checks li { grid-template-columns: 16px 1fr; }
   .checks li > :nth-child(3) { grid-column: 2; }
 }
+
+/* F3 admin screens */
+.f4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--space-4); }
+.link-btn { padding: 0; border: 0; background: none; color: var(--primary); font: inherit; text-decoration: underline; cursor: pointer; }
+@media (max-width: 760px) { .f4 { grid-template-columns: 1fr; } }

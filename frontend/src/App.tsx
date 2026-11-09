@@ -3,7 +3,11 @@ import { RequireAdmin, RequireAuth, landingFor, useAuth } from './auth/AuthConte
 import { Shell } from './pages/Shell';
 import { SignIn } from './pages/SignIn';
 import { Help } from './pages/Help';
-import { Stub } from './pages/Stub';
+import { AdminOverview } from './pages/admin/Overview';
+import { Users } from './pages/admin/Users';
+import { AdminJobs } from './pages/admin/AdminJobs';
+import { CapacityPage } from './pages/admin/Capacity';
+import { Audit } from './pages/admin/Audit';
 import { Dashboard } from './pages/Dashboard';
 import { Assessments } from './pages/Assessments';
 import { Wizard } from './pages/Wizard';
@@ -30,11 +34,11 @@ export function App() {
           <Route path="queue" element={<Queue />} />
           <Route path="help" element={<Help />} />
           <Route path="admin" element={<RequireAdmin />}>
-            <Route index element={<Stub title="Admin overview" />} />
-            <Route path="users" element={<Stub title="Users & Roles" />} />
-            <Route path="jobs" element={<Stub title="Assessments / Jobs" />} />
-            <Route path="capacity" element={<Stub title="Scan Capacity & Scheduling" />} />
-            <Route path="audit" element={<Stub title="Audit Logs" />} />
+            <Route index element={<AdminOverview />} />
+            <Route path="users" element={<Users />} />
+            <Route path="jobs" element={<AdminJobs />} />
+            <Route path="capacity" element={<CapacityPage />} />
+            <Route path="audit" element={<Audit />} />
           </Route>
           <Route path="*" element={<section className="card"><EmptyState title="Page not found">Use the navigation to find what you need.</EmptyState></section>} />
         </Route>
