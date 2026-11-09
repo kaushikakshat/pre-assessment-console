@@ -5,6 +5,7 @@ import hmac
 import ipaddress
 import json
 import socket
+import threading
 from urllib.parse import urlsplit
 
 from app.targets import ipguard
@@ -12,52 +13,87 @@ from app.targets.safe_http import default_guard
 
 CONNECT_TIMEOUT = 10
 MAX_HEAD = 65536
+MAX_CONNS = 64
+MAX_CONTROL_BODY = 65536
 _DENY = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
 
 
 class EgressState:
-    def __init__(self, resolver=socket.getaddrinfo, guard=default_guard):
-        # resolver/guard are injection points for tests only; nothing in env or requests reaches them.
+    def __init__(self, resolver=socket.getaddrinfo, guard=default_guard, *, idle_timeout=120, control_timeout=10):
+        # resolver/guard/timeouts are injection points for tests only; nothing in env or requests reaches them.
         self._resolver, self._guard = resolver, guard
-        self.clear()
+        self.idle_timeout, self.control_timeout = idle_timeout, control_timeout
+        self._lock = threading.RLock()  # allowed() runs in worker threads; control handlers run on the loop
+        self._conns: set = set()  # writers of live tunnels (event-loop only)
+        self.active, self.job_id, self.connections, self.refused = False, None, 0, 0
+        self.hosts, self.ports, self.internal = set(), set(), {}
 
     def set_scope(self, job_id, hosts, ports, internal):
-        self.job_id = job_id
-        self.hosts = {ipguard.normalize_host(h) for h in hosts}
-        self.ports = set(ports)
-        self.internal = {ipguard.normalize_host(h): n for h, n in internal.items()}
-        self.connections = self.refused = 0
+        """Validates everything first, then swaps the scope in one step. Must be called on the event loop
+        (or before serving) because it closes live tunnels."""
+        if not isinstance(job_id, str) or not job_id:
+            raise ValueError("job_id")
+        if isinstance(hosts, (str, bytes)) or not all(isinstance(h, str) for h in hosts):
+            raise ValueError("hosts")
+        if isinstance(ports, (str, bytes)) or not all(type(p) is int and 0 < p < 65536 for p in ports):
+            raise ValueError("ports")
+        if not isinstance(internal, dict):
+            raise ValueError("internal")
+        new_internal = {}
+        for h, n in internal.items():
+            if not isinstance(h, str) or not (n is None or (isinstance(n, list) and all(isinstance(x, str) for x in n))):
+                raise ValueError("internal")
+            new_internal[ipguard.normalize_host(h)] = None if n is None else [ipaddress.ip_network(x) for x in n]
+        new_hosts, new_ports = {ipguard.normalize_host(h) for h in hosts}, set(ports)
+        with self._lock:
+            self.active, self.job_id = True, job_id
+            self.hosts, self.ports, self.internal = new_hosts, new_ports, new_internal
+            self.connections = self.refused = 0
+        self.close_all()
 
     def clear(self):
-        self.job_id, self.hosts, self.ports, self.internal = None, set(), set(), {}
-        self.connections = self.refused = 0
+        """Drops the scope and live tunnels; stats stay readable until the next set_scope."""
+        with self._lock:
+            self.active, self.hosts, self.ports, self.internal = False, set(), set(), {}
+        self.close_all()
+
+    def stats(self):
+        with self._lock:
+            return {"job_id": self.job_id, "connections": self.connections, "refused": self.refused}
+
+    def close_all(self):
+        for w in list(self._conns):
+            w.close()
+        self._conns.clear()
 
     def allowed(self, host: str, port: int) -> tuple[str | None, str | None]:
         """-> (ip to connect to, None) or (None, refusal reason). Counts the outcome."""
         ip, why = self._check(host, port)
-        if why:
-            self.refused += 1
-        else:
-            self.connections += 1
+        with self._lock:
+            if why:
+                self.refused += 1
+            else:
+                self.connections += 1
         return ip, why
 
     def _check(self, host, port):
-        if self.job_id is None:
+        with self._lock:  # snapshot; the (slow) DNS lookup happens outside the lock
+            active, hosts, ports, internal = self.active, self.hosts, self.ports, self.internal
+        if not active:
             return None, "no active scope"
         try:
             host = ipguard.normalize_host(host)
         except UnicodeError:
             return None, "bad host"
-        if host not in self.hosts:
+        if host not in hosts:
             return None, "host out of scope"
-        if port not in self.ports:
+        if port not in ports:
             return None, "port not permitted"
         try:
             ips = ipguard.resolve(host, self._resolver)
         except OSError:
             return None, "unresolvable"
-        nets = self.internal.get(host, False)  # False: none, None: any private, else allowed ranges
-        nets = nets if nets is None or nets is False else [ipaddress.ip_network(n) for n in nets]
+        nets = internal.get(host, False)  # False: none, None: any private, else allowed ranges
         for ip in ips:  # every answer must pass, as in SafeClient
             allow = nets is not False and (nets is None or any(ipaddress.ip_address(ip) in n for n in nets))
             if (why := self._guard(ip, allow)):
@@ -73,98 +109,112 @@ async def _read_head(reader):
     return lines[0], lines[1:]
 
 
-async def _pump(r, w):
+async def _pump(r, w, idle, kill):
     try:
-        while data := await r.read(65536):
+        while data := await asyncio.wait_for(r.read(65536), idle):
             w.write(data)
             await w.drain()
-    except (ConnectionError, asyncio.CancelledError, OSError):
-        pass
-    finally:
-        try:
-            w.close()
-        except Exception:
-            pass
+        if w.can_write_eof():  # half-close: the other direction may still be draining
+            w.write_eof()
+    except (ConnectionError, OSError, asyncio.TimeoutError):
+        kill()
 
 
-async def _tunnel(cr, cw, ur, uw):
-    await asyncio.gather(_pump(cr, uw), _pump(ur, cw))
-
-
-async def _handle_proxy(state, cr, cw):
+async def _handle_proxy(state, sem, cr, cw):
+    uw = None
     try:
-        try:
-            line, headers = await asyncio.wait_for(_read_head(cr), 30)
-            method, target, version = line.split(" ", 2)
-            if method.upper() == "CONNECT":
-                host, _, p = target.rpartition(":")
-                host, port, path = host.strip("[]"), int(p), None
+        if sem.locked():
+            cw.write(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            return
+        async with sem:
+            state._conns.add(cw)
+            try:
+                line, headers = await asyncio.wait_for(_read_head(cr), 30)
+                method, target, version = line.split(" ", 2)
+                if method.upper() == "CONNECT":
+                    host, _, p = target.rpartition(":")
+                    host, port, path, authority = host.strip("[]"), int(p), None, None
+                else:
+                    u = urlsplit(target)
+                    if u.scheme != "http" or not u.hostname or u.username is not None or u.password is not None:
+                        raise ValueError("absolute-form http without userinfo only")
+                    host, port = u.hostname, u.port or 80
+                    path = (u.path or "/") + (f"?{u.query}" if u.query else "")
+                    authority = (f"[{host}]" if ":" in host else host) + (f":{u.port}" if u.port else "")
+            except (ValueError, asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
+                cw.write(_DENY)
+                return
+            ip, why = await asyncio.to_thread(state.allowed, host, port)
+            if why:
+                cw.write(_DENY)
+                return
+            try:
+                ur, uw = await asyncio.wait_for(asyncio.open_connection(ip, port), CONNECT_TIMEOUT)
+            except (OSError, asyncio.TimeoutError):
+                cw.write(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                return
+            state._conns.add(uw)
+            if path is None:
+                cw.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             else:
-                u = urlsplit(target)
-                if u.scheme != "http" or not u.hostname:
-                    raise ValueError("absolute-form http only")
-                host, port = u.hostname, u.port or 80
-                path = (u.path or "/") + (f"?{u.query}" if u.query else "")
-        except (ValueError, asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
-            cw.write(_DENY)
-            return
-        ip, why = await asyncio.to_thread(state.allowed, host, port)
-        if why:
-            cw.write(_DENY)
-            return
-        try:
-            ur, uw = await asyncio.wait_for(asyncio.open_connection(ip, port), CONNECT_TIMEOUT)
-        except (OSError, asyncio.TimeoutError):
-            cw.write(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-            return
-        if path is None:
-            cw.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-        else:  # one request per connection (Connection: close) so each request is re-checked
-            keep = [h for h in headers if h.split(":", 1)[0].strip().lower()
-                    not in ("proxy-connection", "proxy-authorization", "connection", "keep-alive")]
-            uw.write("\r\n".join([f"{method} {path} {version}", *keep, "Connection: close", "", ""]).encode("latin-1"))
-        await _tunnel(cr, cw, ur, uw)
+                # Host is rewritten to the request-line authority. Bytes after the head are tunnelled as-is, so
+                # pipelined requests stay pinned to this same checked IP and never reach another destination.
+                drop = ("proxy-connection", "proxy-authorization", "connection", "keep-alive", "host")
+                keep = [h for h in headers if h.split(":", 1)[0].strip().lower() not in drop]
+                uw.write("\r\n".join([f"{method} {path} {version}", f"Host: {authority}", *keep,
+                                       "Connection: close", "", ""]).encode("latin-1"))
+            def kill():
+                cw.close()
+                uw.close()
+            await asyncio.gather(_pump(cr, uw, state.idle_timeout, kill), _pump(ur, cw, state.idle_timeout, kill))
     finally:
-        try:
-            cw.close()
-        except Exception:
-            pass
+        for w in (cw, uw):
+            if w is not None:
+                state._conns.discard(w)
+                w.close()
+
+
+async def _control_request(state, token, cr):
+    line, headers = await _read_head(cr)
+    method, path, _ = line.split(" ", 2)
+    h = {k.strip().lower(): v.strip() for k, _, v in (x.partition(":") for x in headers)}
+    if not hmac.compare_digest(h.get("x-egress-token", "").encode(), token.encode()):
+        return 401, b""  # before any body is read
+    n = int(h.get("content-length", 0))
+    if not 0 <= n <= MAX_CONTROL_BODY:
+        return 413, b""
+    raw = await cr.readexactly(n) if n else b""
+    if (method, path) == ("PUT", "/scope"):
+        d = json.loads(raw)
+        state.set_scope(d["job_id"], d["hosts"], d["ports"], d.get("internal") or {})
+        return 204, b""
+    if (method, path) == ("DELETE", "/scope"):
+        state.clear()
+        return 204, b""
+    if (method, path) == ("GET", "/stats"):
+        return 200, json.dumps(state.stats()).encode()
+    return 404, b""
 
 
 async def _handle_control(state, token, cr, cw):
-    status, body = 400, b""
     try:
-        line, headers = await asyncio.wait_for(_read_head(cr), 10)
-        method, path, _ = line.split(" ", 2)
-        h = {k.strip().lower(): v.strip() for k, _, v in (x.partition(":") for x in headers)}
-        n = int(h.get("content-length", 0))
-        raw = await cr.readexactly(n) if 0 < n <= 1_000_000 else b""
-        if not hmac.compare_digest(h.get("x-egress-token", "").encode(), token.encode()):
-            status = 401
-        elif (method, path) == ("PUT", "/scope"):
-            d = json.loads(raw)
-            state.set_scope(str(d["job_id"]), set(d["hosts"]), {int(p) for p in d["ports"]}, dict(d.get("internal") or {}))
-            status = 204
-        elif (method, path) == ("DELETE", "/scope"):
-            state.clear()
-            status = 204
-        elif (method, path) == ("GET", "/stats"):
-            status, body = 200, json.dumps({"job_id": state.job_id, "connections": state.connections,
-                                            "refused": state.refused}).encode()
-        else:
-            status = 404
-    except Exception:  # malformed request or scope body
-        status = 400
-    cw.write(f"HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\n"
-             f"Connection: close\r\n\r\n".encode() + body)
-    cw.close()
+        try:
+            status, body = await asyncio.wait_for(_control_request(state, token, cr), state.control_timeout)
+        except asyncio.TimeoutError:
+            return  # slow client: just drop it
+        except Exception:  # malformed request or scope body; previous scope is untouched
+            status, body = 400, b""
+        cw.write(f"HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\n"
+                 f"Connection: close\r\n\r\n".encode() + body)
+    finally:
+        cw.close()
 
 
 async def serve(listen=("0.0.0.0", 3128), control=("0.0.0.0", 3129), *, token: str, state: EgressState | None = None):
     if not token:
         raise ValueError("token required")
-    state = state or EgressState()
-    ps = await asyncio.start_server(lambda r, w: _handle_proxy(state, r, w), *listen)
+    state, sem = state or EgressState(), asyncio.Semaphore(MAX_CONNS)
+    ps = await asyncio.start_server(lambda r, w: _handle_proxy(state, sem, r, w), *listen)
     cs = await asyncio.start_server(lambda r, w: _handle_control(state, token, r, w), *control)
     async with ps, cs:
         await asyncio.gather(ps.serve_forever(), cs.serve_forever())

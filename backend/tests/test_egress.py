@@ -75,6 +75,12 @@ def connect(pp, target):
     return raw(pp, f"CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n".encode())
 
 
+def connect_status(pp, target):
+    with socket.create_connection(("127.0.0.1", pp), 5) as s:  # a good tunnel stays open, so read one chunk
+        s.sendall(f"CONNECT {target} HTTP/1.1\r\n\r\n".encode())
+        return int(s.recv(100).split()[1])
+
+
 def control(cp, method, path, body=None, token=TOKEN):
     b = json.dumps(body).encode() if body is not None else b""
     r = raw(cp, f"{method} {path} HTTP/1.1\r\nX-Egress-Token: {token}\r\nContent-Length: {len(b)}\r\n\r\n".encode() + b)
@@ -148,7 +154,102 @@ def test_control_requires_token(echo):
     st = EgressState(resolver_to("127.0.0.1"), allow_all)
     _, cp = start(st)
     body = {"job_id": "j", "hosts": ["target.test"], "ports": [80], "internal": {}}
-    assert control(cp, "PUT", "/scope", body, token="bad")[0] == 401 and st.job_id is None
-    assert control(cp, "PUT", "/scope", body)[0] == 204 and st.job_id == "j"
-    assert control(cp, "DELETE", "/scope", token="bad")[0] == 401 and st.job_id == "j"
-    assert control(cp, "DELETE", "/scope")[0] == 204 and st.job_id is None
+    assert control(cp, "PUT", "/scope", body, token="bad")[0] == 401 and not st.active
+    assert control(cp, "PUT", "/scope", body)[0] == 204 and st.active
+    assert control(cp, "DELETE", "/scope", token="bad")[0] == 401 and st.active
+    assert control(cp, "DELETE", "/scope")[0] == 204 and not st.active
+
+
+@pytest.fixture
+def holder():
+    """TCP server that accepts and keeps connections open."""
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(5)
+    keep = []
+    threading.Thread(target=lambda: [keep.append(srv.accept()) for _ in iter(int, 1)], daemon=True).start()
+    yield srv.getsockname()[1]
+    srv.close()
+
+
+def scoped(port, hosts=("target.test",), **kw):
+    st = EgressState(resolver_to("127.0.0.1"), allow_all, **kw)
+    st.set_scope("j", set(hosts), {port}, {})
+    return st
+
+
+def test_userinfo_refused(echo):
+    pp, _ = start(scoped(echo))
+    assert raw(pp, f"GET http://target.test@evil.test:{echo}/ HTTP/1.1\r\n\r\n".encode()).startswith(b"HTTP/1.1 403")
+    assert raw(pp, f"GET http://evil.test@target.test:{echo}/ HTTP/1.1\r\n\r\n".encode()).startswith(b"HTTP/1.1 403")
+
+
+def test_host_header_rewritten_to_authority(echo):
+    pp, _ = start(scoped(echo))
+    out = raw(pp, f"GET http://target.test:{echo}/ HTTP/1.1\r\nHost: evil.test\r\n\r\n".encode())
+    assert f"host=target.test:{echo} ".encode() in out and b"evil.test" not in out
+
+
+def test_case_and_trailing_dot_accepted(echo):
+    pp, _ = start(scoped(echo))
+    assert connect_status(pp, f"TARGET.Test.:{echo}") == 200
+
+
+def test_ipv6_literal_scope(echo):
+    pp, _ = start(scoped(echo, hosts=("::1",)))
+    assert connect_status(pp, f"[::1]:{echo}") == 200
+    assert connect_status(pp, f"[::2]:{echo}") == 403
+
+
+def test_absolute_https_refused(echo):
+    pp, _ = start(scoped(echo))
+    assert raw(pp, b"GET https://target.test/ HTTP/1.1\r\n\r\n").startswith(b"HTTP/1.1 403")
+
+
+def test_bad_ports_refused(echo):
+    pp, _ = start(scoped(echo))
+    assert connect(pp, "target.test:0").startswith(b"HTTP/1.1 403")
+    assert connect(pp, "target.test:70000").startswith(b"HTTP/1.1 403")
+    with pytest.raises(ValueError):
+        scoped(echo).set_scope("j", {"a"}, {0}, {})
+    with pytest.raises(ValueError):
+        scoped(echo).set_scope("j", {"a"}, {65536}, {})
+
+
+def test_tunnel_closed_on_scope_delete(holder):
+    pp, cp = start(scoped(holder))
+    with socket.create_connection(("127.0.0.1", pp), 5) as s:
+        s.sendall(f"CONNECT target.test:{holder} HTTP/1.1\r\n\r\n".encode())
+        assert s.recv(100).startswith(b"HTTP/1.1 200")
+        assert control(cp, "DELETE", "/scope")[0] == 204
+        assert s.recv(100) == b""
+    assert json.loads(control(cp, "GET", "/stats")[1])["connections"] == 1  # stats survive clear
+
+
+def test_idle_timeout_closes_tunnel(holder):
+    pp, _ = start(scoped(holder, idle_timeout=0.3))
+    with socket.create_connection(("127.0.0.1", pp), 5) as s:
+        s.sendall(f"CONNECT target.test:{holder} HTTP/1.1\r\n\r\n".encode())
+        assert s.recv(100).startswith(b"HTTP/1.1 200")
+        assert s.recv(100) == b""
+
+
+def test_malformed_put_keeps_previous_scope(echo):
+    st = scoped(echo)
+    _, cp = start(st)
+    for bad in ({"job_id": "k", "hosts": ["x"], "ports": [80], "internal": {"x": ["not-a-cidr"]}},
+                {"job_id": "k", "hosts": ["x"], "ports": ["80"], "internal": {}},
+                {"job_id": "k", "hosts": [1], "ports": [80], "internal": {}}, [1]):
+        assert control(cp, "PUT", "/scope", bad)[0] == 400
+    assert st.active and st.job_id == "j" and st.hosts == {"target.test"} and st.ports == {echo}
+
+
+def test_control_slowloris_times_out(echo):
+    _, cp = start(scoped(echo, control_timeout=0.3))
+    with socket.create_connection(("127.0.0.1", cp), 5) as s:  # headers never finish
+        s.sendall(b"PUT /scope HTTP/1.1\r\nX-Egress-Token: tok\r\n")
+        assert s.recv(100) == b""
+    with socket.create_connection(("127.0.0.1", cp), 5) as s:  # valid token, body never arrives
+        s.sendall(b"PUT /scope HTTP/1.1\r\nX-Egress-Token: tok\r\nContent-Length: 100\r\n\r\n{")
+        assert s.recv(100) == b""
+    assert control(cp, "PUT", "/scope", token="bad")[0] == 401
