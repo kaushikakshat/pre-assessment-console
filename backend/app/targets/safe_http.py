@@ -1,6 +1,7 @@
 """The only HTTP client scan code may use. Resolution + guard + connect happen in one place (the network
 backend), so the address that was checked is the address that is connected to (no DNS-rebinding gap).
 httpcore still sees the hostname, so Host header, SNI and certificate verification use it."""
+import http.cookiejar
 import ipaddress
 import socket
 import time
@@ -85,6 +86,8 @@ class SafeClient:
         backend = _GuardedBackend({ipguard.normalize_host(h): n for h, n in items}, resolver, guard)
         self._client = httpx.Client(transport=_Transport(backend), follow_redirects=False, trust_env=False,
                                     timeout=httpx.Timeout(TIMEOUT))
+        # No cookie jar: callers send Cookie headers explicitly, so one account's session never reaches another request.
+        self._client.cookies.jar.set_policy(http.cookiejar.DefaultCookiePolicy(allowed_domains=[]))
         # Fail closed if an upstream change stops our guarded pool from being the one in use.
         t = self._client._transport
         if not (isinstance(t, _Transport) and t._pool._network_backend is backend and not self._client._mounts):

@@ -20,7 +20,7 @@ from app.core.startup import validate_env
 from app.engine import stages
 from app.engine.zap import EngineDown, EngineError
 from app.db import SessionLocal
-from app.models import Assessment, Credential, Finding, Job, ModuleRun, PolicyVersion, SchedulerConfig, Worker
+from app.models import Assessment, Credential, Finding, Job, LoginSetup, ModuleRun, PolicyVersion, SchedulerConfig, Worker
 from app.scheduler.admission import ACTIVE, ENGINE_MODULES, claim_next, heartbeat, reap_expired
 from app.targets import ipguard
 from app.targets.safe_http import BlockedAddress, RequestCapExceeded, SafeClient, ScopeError
@@ -30,6 +30,7 @@ from app.worker.modules.base import Blocked, Ctx
 from app.worker.redact import redact
 
 log = logging.getLogger("worker")
+REQUEST_CAPS = {"access": 500, "cval": 200}  # replays are many small requests; every other module keeps 50
 REQUEST_CAP, DEFAULT_TIMEOUT, LOOP_SECONDS, HEARTBEAT_SECONDS, MAX_MISSES = 50, 120, 2, 10, 3
 
 
@@ -43,6 +44,31 @@ def final_state(states) -> str:
     return "completed-warnings" if any(s in ("completed", "completed-warnings") for s in states) else "failed"
 
 
+def fingerprint(module, d):
+    return hashlib.sha256(f"{module}|{d.fingerprint_key or f'{d.title}|{d.asset}'}".encode()).hexdigest()
+
+
+def confirm_findings(db, job, assessment, confirmed):
+    """cval: drafts already stored (their text was redacted in place) whose re-check reproduced."""
+    for module, d in confirmed:
+        f = db.scalar(select(Finding).where(Finding.assessment_id == assessment.id, Finding.fingerprint == fingerprint(module, d)))
+        if f and f.confidence != "confirmed":
+            f.confidence = "confirmed"
+            f.history = [*f.history, {"at": _now(), "by": "System", "text": "Confirmed by control validation"}]
+    db.flush()
+
+
+def load_accounts(db, a, run_ctx):
+    """Sealed blobs only: the auth module opens them into locals. Plaintext never enters run_ctx."""
+    setup = db.get(LoginSetup, a.id)
+    creds = db.execute(select(Credential.display_id, Credential.role_label, Credential.username_enc, Credential.password_enc)
+                       .where(Credential.assessment_id == a.id, Credential.deleted_at.is_(None)).order_by(Credential.id)).all()
+    if setup and creds:
+        run_ctx["accounts"] = [(c.display_id, c.role_label, bytes(c.username_enc), bytes(c.password_enc)) for c in creds]
+        run_ctx["login"] = {k: getattr(setup, k) for k in ("style", "login_url", "username_field", "password_field",
+                            "logged_in_indicator", "code_field", "otp_url", "otp_field", "logged_out_indicator", "bypass_code_enc")}
+
+
 def store_findings(db, job, assessment, module, drafts):
     """Dedupe by sha256(module|title|asset): a repeat only refreshes last_seen_at and the job reference."""
     db.execute(select(func.pg_advisory_xact_lock(assessment.id)))
@@ -50,7 +76,7 @@ def store_findings(db, job, assessment, module, drafts):
         for f in ("title", "asset", "description", "impact", "reproduce", "remediation"):
             setattr(d, f, redact(getattr(d, f)))  # header values reach these fields too
         cred = db.scalar(select(Credential.id).where(Credential.display_id == d.credential_id)) if d.credential_id else None
-        fp = hashlib.sha256(f"{module}|{d.fingerprint_key or f'{d.title}|{d.asset}'}".encode()).hexdigest()
+        fp = fingerprint(module, d)
         old = db.scalar(select(Finding).where(Finding.assessment_id == assessment.id, Finding.fingerprint == fp))
         if old:
             old.last_seen_at, old.job_id = func.now(), job.id
@@ -80,7 +106,7 @@ ENGINE_DOWN = "The scanning engine is not running."
 def execute_module(key, ctx_args, timeout, stage_deadline=None, run_ctx=None):
     """-> (state, detail, findings, tool_version, untested). Never raises; every failure is plain and never 'completed'.
     stage_deadline (absolute monotonic) caps the module's own timeout; run_ctx is shared across the job's modules."""
-    client = SafeClient({ctx_args["host"]}, ctx_args["internal_hosts"], max_requests=REQUEST_CAP,
+    client = SafeClient({ctx_args["host"]}, ctx_args["internal_hosts"], max_requests=REQUEST_CAPS.get(key, REQUEST_CAP),
                         resolver=ctx_args["resolver"])
     deadline = time.monotonic() + timeout
     ctx = Ctx(**{k: v for k, v in ctx_args.items() if k != "internal_hosts"}, client=client,
@@ -147,6 +173,8 @@ def run_job(job_id, worker, halt, resolver=socket.getaddrinfo):
         args["internal_hosts"] = {} if internal is False else {p.host: internal}
         keys = list(db.scalars(select(ModuleRun.key).where(ModuleRun.job_id == job_id).order_by(ModuleRun.id)))
         states, run_ctx, engine_down = [], {"profile": job.profile, "notes": a.notes or ""}, False
+        if "auth" in keys:
+            load_accounts(db, a, run_ctx)
         limits = db.scalar(select(SchedulerConfig.profile_limits).where(SchedulerConfig.id == 1)) or {}
         budget_s = limits.get(job.profile, {}).get("budget_min", {"pre": 30, "deep": 180}.get(job.profile)) if job.profile else None
         budget = stages.Budget(budget_s * 60, keys) if budget_s else None
@@ -193,6 +221,12 @@ def run_job(job_id, worker, halt, resolver=socket.getaddrinfo):
                 db.rollback()
                 return
             store_findings(db, job, a, key, found)
+            if key == "exposed":  # cval re-checks these; access records its own suspects
+                run_ctx.setdefault("suspects", []).extend({"module": key, "draft": d, "method": "GET", "url": d.location["url"],
+                                                           "owner": None, "who": None, "form": None}
+                                                          for d in found if d.confidence == "suspected")
+            if key == "cval":
+                confirm_findings(db, job, a, run_ctx.get("confirmed", []))
             db.commit()
             states.append(state)
         why = _gate(db, job_id, worker)
