@@ -71,10 +71,9 @@ services:
     image: zaproxy/zap-stable@sha256:9624669db72f54d86c4b46a7064518bd9bf79d8c61a4c31befa9923489f328af  # 2.17.0
     profiles: [dast]
     environment:
-      JAVA_OPTS: -Xmx1g
       ZAP_API_KEY: ${ZAP_API_KEY:?set in .env}
     command: >
-      zap.sh -daemon -host 0.0.0.0 -port 8090
+      zap.sh -Xmx1g -daemon -host 0.0.0.0 -port 8090
       -config api.key=${ZAP_API_KEY}
       -config api.addrs.addr.name=.* -config api.addrs.addr.regex=true
       -config connection.proxyChain.enabled=true
@@ -111,6 +110,11 @@ services:
     build: ./dev/testtarget
     profiles: [dev]
     networks: [default, outbound]  # outbound so the dev internal-target rule is reachable through egress
+
+  testportal:
+    build: ./dev/testportal
+    profiles: [dev]
+    networks: [default, outbound]  # deliberately flawed demo portal for the Phase 3 e2e; dev only
 
 networks:
   outbound: {}  # egress-only route to the internet and testtarget

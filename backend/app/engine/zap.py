@@ -7,7 +7,7 @@ are excluded by construction (ids not installed in the running ZAP are skipped):
   pa-safe (Pre-Assessment): 6 path traversal, 7 remote file inclusion, 40012 reflected XSS, 40018 SQL injection,
     40003 CRLF injection, 40008 parameter tampering, 20019 external redirect, 90023 XXE, 90021 XPath injection,
     40032 .htaccess leak, 40034 .env leak, 40035 hidden files.
-  pa-deep (Deep) = pa-safe plus 40014/40016/40017 stored XSS, 40026 DOM XSS, 40009 server-side include,
+  pa-deep (Deep) = pa-safe plus 40014/40016/40017 stored XSS, 40009 server-side include,
     90019 server-side code injection, 90020 OS command injection, 90025 expression language injection,
     90035/90036 server-side template injection, 90017 XSLT injection, 10095 backup files, 40028 ELMAH, 40029 trace.axd.
 """
@@ -20,7 +20,8 @@ import httpx
 from app.worker.modules.base import FindingDraft, location
 
 POLICIES = {"pa-safe": [6, 7, 40012, 40018, 40003, 40008, 20019, 90023, 90021, 40032, 40034, 40035]}
-POLICIES["pa-deep"] = POLICIES["pa-safe"] + [40014, 40016, 40017, 40026, 40009, 90019, 90020, 90025, 90035, 90036,
+# 40026 DOM XSS is left out on purpose: it starts a headless browser inside ZAP and OOM-kills the 1.6 GB container
+POLICIES["pa-deep"] = POLICIES["pa-safe"] + [40014, 40016, 40017, 40009, 90019, 90020, 90025, 90035, 90036,
                                              90017, 10095, 40028, 40029]
 SEVERITY = {"High": "high", "Medium": "medium", "Low": "low", "Informational": "info"}
 _ID_SEG = re.compile(r"^(\d+|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$")

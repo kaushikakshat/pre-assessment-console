@@ -38,3 +38,5 @@ Triaged in the final whole-branch review. Pre-UAT items are already fixed; these
 - B5: CSV formula guard untested; CSV export silently capped at 500; wid int→422 vs 404; invented caps on aging/queue/quota bounds; no test for statement_timeout; scheduled-job cancel 409; resume doesn't check other active job
 - Worker: on graceful shutdown (SIGTERM) clear its own heartbeat so a replaced worker stops counting as healthy immediately (today it counts for up to 30s after a restart, so an admin could briefly raise the limit above real capacity)
 - Egress scope covers the target host only (the validated host). Links to other in-scope hosts are reported as untested. — deviation recorded during Task 6
+- Phase 3: credential key rotation (today a new keypair makes saved test accounts unreadable; owners must re-enter them)
+- Phase 3: the ZAP AJAX spider is not enabled (memory: it needs a headless browser beyond the 1.6 GB cap); single-page apps are crawled by the classic spider only
