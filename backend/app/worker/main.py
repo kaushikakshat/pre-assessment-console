@@ -109,7 +109,7 @@ def execute_module(key, ctx_args, timeout, stage_deadline=None, run_ctx=None):
     rc = run_ctx if run_ctx is not None else {}
     wl = bool(rc.get("wordlists")) and key in ("exposed", "dast")  # wordlist modules may use the profile's request cap
     client = SafeClient({ctx_args["host"]}, ctx_args["internal_hosts"],
-                        max_requests=rc["request_cap"] if wl else REQUEST_CAPS.get(key, REQUEST_CAP),
+                        max_requests=rc.get("request_cap", REQUEST_CAP) if wl else REQUEST_CAPS.get(key, REQUEST_CAP),
                         resolver=ctx_args["resolver"])
     deadline = time.monotonic() + timeout
     ctx = Ctx(**{k: v for k, v in ctx_args.items() if k != "internal_hosts"}, client=client,

@@ -20,9 +20,9 @@ def page(body, extra=()):
 
 
 def test_cms_wordpress_eol(serve):
-    port = serve({"/": page(b'<html><meta name="generator" content="WordPress 4.9.8"></html>')})
+    port = serve({"/": page(b'<html><meta name="generator" content="WordPress 4.6.1"></html>')})
     r = cms.run(make_ctx(port))
-    assert any(d.title == "wordpress 4.9.8 is no longer supported" and d.severity == "medium" for d in r.findings)
+    assert any(d.title == "wordpress 4.6.1 is no longer supported" and d.severity == "medium" for d in r.findings)
     assert r.detail.endswith(f"Advisory data as of {advisories.AS_OF}") and r.state == "completed"
 
 
@@ -71,16 +71,27 @@ def test_tls_testssl_uses_safe_ip_and_maps_medium(monkeypatch, serve):
     ctx = make_ctx(port, "https", run_ctx={"profile": "deep"})
     seen = {}
 
-    def fake(args, **kw):
-        seen["args"] = args
-        rows = [{"id": "BEAST", "severity": "MEDIUM", "finding": "vulnerable"}, {"id": "x", "severity": "LOW", "finding": "m"},
-                {"id": "ROBOT", "severity": "HIGH", "finding": "bad", "cve": "CVE-1"}, {"id": "i", "severity": "OK", "finding": ""}]
-        Path(args[args.index("--jsonfile") + 1]).write_text(json.dumps(rows))
-    monkeypatch.setattr(tls.subprocess, "run", fake)
+    class FakeProc:
+        pid = 0
+
+        def __init__(self, args, **kw):
+            seen["args"], seen["kw"] = args, kw
+            rows = [{"id": "BEAST", "severity": "MEDIUM", "finding": "vulnerable"}, {"id": "x", "severity": "LOW", "finding": "m"},
+                    {"id": "ROBOT", "severity": "HIGH", "finding": "bad", "cve": "CVE-1"}, {"id": "i", "severity": "OK", "finding": ""},
+                    {"id": "BEAST", "severity": "MEDIUM", "finding": "dup"}, "junk"]
+            Path(args[args.index("--jsonfile") + 1]).write_text(json.dumps(rows))
+
+        def wait(self, timeout=None):
+            return 0
+
+        def poll(self):
+            return 0
+    monkeypatch.setattr(tls.subprocess, "Popen", FakeProc)
     monkeypatch.setattr(tls.shutil, "which", lambda n: "/bin/true")
     drafts, version, note = tls._testssl(ctx, ctx.safe_ip())
     a = seen["args"]
     assert a[a.index("--ip") + 1] == ctx.safe_ip() == "127.0.0.1" and a[-1] == f"app.test:{port}" and "shell" not in a
+    assert a[a.index("--nodns") + 1] == "none" and seen["kw"]["start_new_session"] is True
     assert [d.severity for d in drafts] == ["medium", "high"] and note == "" and version.startswith("testssl.sh")
 
 
@@ -153,6 +164,7 @@ class Fuzzed(http.server.BaseHTTPRequestHandler):
         Fuzzed.hits.append(self.path)
         body = f"<p>you searched {unquote_plus(self.path.split('q=', 1)[-1])}</p>".encode()
         self.send_response(200)
+        self.send_header("Content-Type", "text/html")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -209,3 +221,35 @@ def test_exposed_runs_discovery_when_lists_selected(serve, monkeypatch):
     ctx = make_ctx(port, run_ctx={"wordlists": ["Discovery/c.txt"], "rate_per_s": 100})
     r = exposed.run(ctx)
     assert any(d.location["path"] == "/secret" for d in r.findings)
+
+
+def test_eol_uses_vendored_eol_dates():
+    from datetime import date
+    assert advisories.eol_findings("python", "3.8.1")[0].title == "python 3.8.1 is no longer supported"
+    assert advisories.eol_findings("nodejs", "22.1.0", today=date(2026, 11, 9)) == []  # supported LTS cycle
+    assert advisories.eol_findings("nodejs", "22.1.0", today=date(2030, 1, 1))  # its eol date has passed
+    assert advisories.eol_findings("python", "9.9") == []  # no cycle data: say nothing
+
+
+def test_retire_range_boundaries():
+    a = advisories.affected
+    assert a("4.0", {"below": "4.0.0"}) is False and a("4.0.0", {"below": "4.0"}) is False
+    assert a("3.9.9", {"below": "4.0"}) and a("1.2.1", {"atOrAbove": "1.2.1", "below": "1.9"})
+    assert not a("1.2.0", {"atOrAbove": "1.2.1", "below": "1.9"}) and not a("1.9", {"atOrAbove": "1.2.1", "below": "1.9.0"})
+    assert a("2.0", {"atOrBelow": "2.0.0"}) and not a("2.0.1", {"atOrBelow": "2.0"})
+    assert not a("1.0", {"atOrAbove": "0.5"})  # no upper bound: not a range retire would flag
+
+
+def test_bad_retire_regex_is_skipped(monkeypatch):
+    monkeypatch.setattr(advisories, "_retire", lambda: {"broken": {"extractors": {"uri": ["(unclosed§§version§§"]}, "vulnerabilities": []}})
+    assert advisories.js_library_findings("http://a/", b'<script src="/x.js"></script>') == []
+
+
+def test_discovery_baseline_blocked_returns_status(monkeypatch):
+    class C:
+        url, host, port, deadline, run_ctx = "http://app.test/", "app.test", 80, time.monotonic() + 30, {}
+
+        def get(self, path):
+            raise Blocked
+    monkeypatch.setattr(wordlists, "read", lambda k, root=None: ["a", "b"])
+    assert wordlists.discover(C(), ["Discovery/x.txt"]) == ([], "blocked", 2)

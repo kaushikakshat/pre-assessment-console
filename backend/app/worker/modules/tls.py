@@ -1,5 +1,7 @@
 import json
+import os
 import re
+import signal
 import shutil
 import socket
 import ssl
@@ -105,19 +107,33 @@ def _testssl(ctx, ip):
     # shortcut: `--jsonfile -` makes testssl write a file literally named "-" in the cwd, so a private temp file is used instead.
     with tempfile.TemporaryDirectory() as d:
         out_file = str(Path(d) / "out.json")
+        proc = subprocess.Popen([exe, "--quiet", "--jsonfile", out_file, "--ip", ip, "--nodns", "none", "--warnings", "off", "--fast",
+                                 f"{ctx.host}:{ctx.port}"], env=clean_env(), cwd=d, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         try:
-            subprocess.run([exe, "--quiet", "--jsonfile", out_file, "--ip", ip, "--warnings", "off", "--fast", f"{ctx.host}:{ctx.port}"],
-                           env=clean_env(), cwd=d, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                           timeout=max(1, ctx.remaining()), check=False)
+            proc.wait(timeout=max(1, ctx.remaining()))
             rows = json.loads(Path(out_file).read_text())
         except subprocess.TimeoutExpired:
             return [], version, "Deep TLS checks ran out of time."
         except (OSError, ValueError):
             return [], version, "Deep TLS checks could not be completed."
+        finally:
+            if proc.poll() is None:  # openssl children live in the same session: stop them all
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                proc.wait()
+    if not isinstance(rows, list):
+        return [], version, "Deep TLS checks could not be completed."
     out = []
+    seen = set()
     for r in rows:
+        if not isinstance(r, dict) or r.get("id") in seen:
+            continue
         sev = str(r.get("severity", "")).lower()
         if sev in ("medium", "high", "critical"):
+            seen.add(r.get("id"))
             out.append(_finding(ctx, sev, f"TLS weakness: {r.get('id')}", f"testssl.sh reports {r.get('id')}: {r.get('finding')}",
                                 "Weak TLS settings can let attackers read or change traffic.", "Follow the testssl.sh finding to change the TLS configuration.",
                                 f"{ctx.host}:{ctx.port}\n{r.get('id')}: {str(r.get('finding'))[:300]}" + (f"\n{r['cve']}" if r.get("cve") else "")))

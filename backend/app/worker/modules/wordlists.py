@@ -83,7 +83,9 @@ def discover(ctx, keys):
     base_path = "/" + secrets.token_hex(8)
     try:
         baseline = ctx.get(base_path)
-    except (httpx.HTTPError, OSError, BlockedAddress):
+    except Blocked:
+        return [], "blocked", len(paths)
+    except (httpx.HTTPError, OSError, BlockedAddress, TimeoutError, RequestCapExceeded):
         return [], "stopped", len(paths)
     out, th, errors = [], Throttle(_rate(ctx)), 0
     for i, path in enumerate(paths):
@@ -113,7 +115,6 @@ def discover(ctx, keys):
     return out, "ok", 0
 
 
-XSS_MARK = re.compile(r"[<>\"']")
 SQL_ERR = re.compile(r"(?i)you have an error in your sql syntax|warning: mysqli?_|ORA-\d{5}|unclosed quotation mark|"
                      r"pg_query\(\)|psycopg2?\.errors|sqlite3?\.operationalerror|SQLSTATE\[|syntax error at or near|"
                      r"unterminated quoted string")
@@ -175,6 +176,7 @@ def fuzz(ctx, keys):
         except (TimeoutError, RequestCapExceeded):
             return out, "stopped", total - done
         except (httpx.HTTPError, OSError, BlockedAddress):
+            done += len(payloads) * len(params)  # no baseline, so none of this input's payloads were tested
             continue
         for field in params:
             found = set()
@@ -194,7 +196,8 @@ def fuzz(ctx, keys):
                     continue
                 done += 1
                 kind = None
-                if XSS_MARK.search(payload) and payload in r.text and payload not in base.text and "xss" not in found:
+                if "<" in payload and "html" in r.headers.get("content-type", "").lower() and payload in r.text \
+                        and payload not in base.text and "xss" not in found:
                     kind = "xss"
                 elif SQL_ERR.search(r.text) and not SQL_ERR.search(base.text) and "sql" not in found:
                     kind = "sql"

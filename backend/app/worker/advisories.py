@@ -1,22 +1,19 @@
-"""Offline advisories from vendored data: retire.js jsrepository.json and endoflife.date release data."""
+"""Offline advisories from vendored data: retire.js jsrepository.json and endoflife.date cycle data (with eol dates)."""
 import json
 import os
 import re
+from datetime import date
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urljoin
 
+from .redact import redact
 from .modules.base import FindingDraft, location
 
 VENDOR = Path(os.environ.get("VENDOR_DIR", "/opt/vendor"))
 AS_OF = json.loads((Path(__file__).parents[2] / "vendor" / "manifest.json").read_text())["advisory_as_of"]
 _SEV = {"low": "low", "medium": "medium", "high": "high", "critical": "critical"}
 _SCRIPT = re.compile(r"(?is)<script\b[^>]*?\bsrc\s*=\s*[\"']?([^\"'\s>]+)")
-# The vendored endoflife.date release data lists releases but no end-of-life dates, so support is judged by cycle:
-# a cycle older than the newest SUPPORTED cycles of the product is reported unsupported. Cycle = first N version parts.
-# shortcut: approximates vendor policies; upgrade when the vendored data carries real eol dates.
-CYCLE_PARTS = {"nodejs": 1, "drupal": 1, "jquery": 1, "angular": 1, "laravel": 1, "postgresql": 1, "tomcat": 1}
-SUPPORTED = {"drupal": 2}  # newest cycles still supported; default 3
 
 
 @lru_cache
@@ -28,11 +25,23 @@ def _retire() -> dict:
 
 
 def _ver(v: str) -> tuple:
-    return tuple(int(x) for x in re.findall(r"\d+", v.split("-")[0])[:4]) or (0,)
+    return tuple(int(x) for x in re.findall(r"\d+", v.split("-")[0])[:4])
 
 
-def _lt(a: str, b: str) -> bool:  # a below b; "1.9.0b1" counts as 1.9.0 (shortcut: pre-release tags ignored)
-    return _ver(a) < _ver(b)
+def _cmp(a: str, b: str) -> int:
+    """-1/0/1; tuples padded so 4.0 == 4.0.0. shortcut: pre-release tags (1.9.0b1) compare as their numeric part."""
+    x, y = _ver(a), _ver(b)
+    n = max(len(x), len(y), 1)
+    x, y = x + (0,) * (n - len(x)), y + (0,) * (n - len(y))
+    return (x > y) - (x < y)
+
+
+def affected(ver: str, v: dict) -> bool:
+    """retire.js range: atOrAbove / above / below / atOrBelow, all that are present must hold."""
+    if not ({"below", "atOrBelow"} & set(v)):
+        return False
+    return ((("atOrAbove" not in v) or _cmp(ver, v["atOrAbove"]) >= 0) and (("above" not in v) or _cmp(ver, v["above"]) > 0)
+            and (("below" not in v) or _cmp(ver, v["below"]) < 0) and (("atOrBelow" not in v) or _cmp(ver, v["atOrBelow"]) <= 0))
 
 
 def js_library_findings(url: str, body: bytes) -> list[FindingDraft]:
@@ -41,13 +50,19 @@ def js_library_findings(url: str, body: bytes) -> list[FindingDraft]:
         full = urljoin(url, src)
         for name, lib in _retire().items():
             ex = lib.get("extractors", {})
-            ver = next((m.group(1) for rx in ex.get("uri", []) + ex.get("filename", [])
-                        if (m := re.search(rx.replace("§§version§§", r"[0-9][0-9.a-z_\-]+"), full))), None)
+            ver = None
+            for rx in ex.get("uri", []) + ex.get("filename", []):
+                try:
+                    if m := re.search(rx.replace("§§version§§", r"[0-9][0-9.a-z_\-]+"), full):
+                        ver = m.group(1)
+                        break
+                except re.error:
+                    continue  # one bad vendored pattern must not stop the scan
             if not ver or (name, ver) in seen:
                 continue
             seen.add((name, ver))
             for v in lib.get("vulnerabilities", []):
-                if (v.get("atOrAbove") and _lt(ver, v["atOrAbove"])) or not _lt(ver, v.get("below", "0")):
+                if not affected(ver, v):
                     continue
                 ids = v.get("identifiers", {})
                 cve = ", ".join(ids.get("CVE", [])) or ids.get("githubID", "no CVE listed")
@@ -55,10 +70,10 @@ def js_library_findings(url: str, body: bytes) -> list[FindingDraft]:
                 out.append(FindingDraft(
                     _SEV.get(v.get("severity"), "medium"), "suspected", f"{name} {ver} has a known vulnerability: {summary[:80]}",
                     full, location_for(url, full),
-                    f"The page loads {name} {ver}, which is below {v['below']}. {summary}",
+                    f"The page loads {name} {ver}, which is in the affected range. {summary}",
                     "Attackers may use the published weakness in this library against visitors.",
-                    f"Script: {full}\nDetected version: {ver}\nAdvisory: {cve}\nAdvisory data as of {AS_OF}",
-                    f"Open {url} and view the script address {full}.", f"Update {name} to {v['below']} or newer.", v.get("info", [])[:3]))
+                    redact(f"Script: {full}\nDetected version: {ver}\nAdvisory: {cve}\nAdvisory data as of {AS_OF}"),
+                    f"Open {url} and view the script address {full}.", f"Update {name} to a release newer than the affected range.", v.get("info", [])[:3]))
     return out
 
 
@@ -68,30 +83,31 @@ def location_for(page, script):
 
 
 @lru_cache
-def _cycles(product: str) -> dict:
+def _eol_data(product: str) -> list:
     try:
-        versions = json.loads((VENDOR / "eol" / f"{product}.json").read_text())["versions"]
-    except (OSError, KeyError, ValueError):
-        return {}
-    n, cycles = CYCLE_PARTS.get(product, 2), {}
-    for v in versions:
-        cycles.setdefault(".".join(re.findall(r"\d+", v)[:n]), _ver(v))
-    return cycles
+        rows = json.loads((VENDOR / "eol" / f"{product}.json").read_text())
+    except (OSError, ValueError):
+        return []
+    return [r for r in rows if isinstance(r, dict) and "cycle" in r] if isinstance(rows, list) else []
 
 
-def eol_findings(product: str, version: str) -> list[FindingDraft]:
-    cycles = _cycles(product)
-    n = CYCLE_PARTS.get(product, 2)
-    cycle = ".".join(re.findall(r"\d+", version)[:n])
-    newest = sorted(cycles, key=lambda c: _ver(c), reverse=True)[:SUPPORTED.get(product, 3)]
-    if cycle not in cycles or cycle in newest:
+def eol_findings(product: str, version: str, today: date | None = None) -> list[FindingDraft]:
+    """Unsupported only when the vendored endoflife.date cycle says so (eol true, or an eol date in the past)."""
+    today = today or date.today()
+    ver = ".".join(re.findall(r"\d+", version))
+    match = [r for r in _eol_data(product) if ver == str(r["cycle"]) or ver.startswith(str(r["cycle"]) + ".")]
+    if not match:
+        return []
+    c = max(match, key=lambda r: len(str(r["cycle"])))
+    eol = c.get("eol")
+    if not (eol is True or (isinstance(eol, str) and date.fromisoformat(eol) < today)):
         return []
     return [FindingDraft(
-        "medium", "suspected", f"{product} {version} is no longer supported", product, {
+        "medium", "confirmed", f"{product} {version} is no longer supported", product, {
             "url": None, "host": None, "port": None, "path": None, "param": None, "method": None,
             "component": product, "kind": "Software"},
-        f"{product} {version} belongs to release series {cycle}, which is older than the series the vendor still maintains.",
+        f"{product} {version} belongs to release series {c['cycle']}, which reached end of life" + (f" on {eol}." if eol is not True else "."),
         "Unsupported software no longer receives security fixes, so new weaknesses stay open.",
-        f"Detected version: {version}\nCurrent series: {', '.join(newest)}\nAdvisory data as of {AS_OF}",
-        f"Check the {product} version on the site and compare it with the vendor's release list.",
+        f"Detected version: {version}\nEnd of life: {eol}\nAdvisory data as of {AS_OF}",
+        f"Check the {product} version on the site and compare it with https://endoflife.date/{product}.",
         f"Upgrade {product} to a supported release.", ["https://endoflife.date/" + product])]

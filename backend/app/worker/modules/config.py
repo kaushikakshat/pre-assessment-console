@@ -5,20 +5,20 @@ from urllib.parse import urlsplit
 import httpx
 
 from app.targets.safe_http import BlockedAddress, RequestCapExceeded
-from app.worker.redact import build_evidence
+from app.worker.redact import build_evidence, redact
 
 from .base import REFS, Blocked, FindingDraft, ModuleResult, location, looks_blocked
 from .headers import cookie_findings
 
 EVIL = "https://evil.example"
 MAX_PAGES = 30
-_MIXED = re.compile(r"(?is)<(?:script|img|iframe|link|audio|video|source)\b[^>]*?\b(?:src|href)\s*=\s*[\"']?(http://[^\"'\s>]+)")
+_MIXED = re.compile(r"(?is)<(?:(?:script|img|iframe|audio|video|source)\b[^>]*?\bsrc|link\b(?=[^>]*\brel\s*=\s*[\"']?(?:stylesheet|icon|preload))[^>]*?\bhref)\s*=\s*[\"']?(http://[^\"'\s>]+)")
 FAILS = (httpx.HTTPError, OSError, BlockedAddress)
 CORS_REF = "https://developer.mozilla.org/docs/Web/HTTP/CORS"
 
 
-def _draft(ctx, sev, title, kind, url, desc, impact, evidence, how, fix, ref, component=None, method="GET"):
-    return FindingDraft(sev, "confirmed", title, urlsplit(url).netloc + urlsplit(url).path if kind == "Web page" else ctx.host,
+def _draft(ctx, sev, title, kind, url, desc, impact, evidence, how, fix, ref, component=None, method="GET", confidence="confirmed"):
+    return FindingDraft(sev, confidence, title, urlsplit(url).netloc + urlsplit(url).path if kind == "Web page" else ctx.host,
                         location(ctx, kind, url=url, path=urlsplit(url).path, component=component, method=method),
                         desc, impact, evidence, how, fix, [ref])
 
@@ -37,13 +37,16 @@ def _cors(ctx):
     if acac and acao == EVIL:
         sev, title, why = "high", "CORS reflects any origin and allows credentials", \
             "The site copies any requesting origin into Access-Control-Allow-Origin and allows credentials."
+        impact = "A malicious site could read signed-in users' data from this site in their browsers."
     elif acac and acao == "*":
         sev, title, why = "medium", "CORS allows every origin together with credentials", \
             "The site answers Access-Control-Allow-Origin: * and Access-Control-Allow-Credentials: true."
+        impact = ("Browsers refuse credentialed requests to a wildcard origin, so this is not directly exploitable, "
+                  "but it shows an unsafe policy that becomes serious if the site later reflects origins.")
     else:
         return []
     return [_draft(ctx, sev, title, "Response header", ctx.url, why,
-                   "A malicious site could read signed-in users' data from this site in their browsers.",
+                   impact,
                    build_evidence("GET", ctx.url, r.status_code, r.headers, None,
                                   ("access-control-allow-origin", "access-control-allow-credentials")) + f"\nRequest Origin: {EVIL}",
                    f"Run: curl -sI -H 'Origin: {EVIL}' {ctx.url} and read the Access-Control headers.",
@@ -82,8 +85,8 @@ def run(ctx) -> ModuleResult:
                 seen.add(("mixed", url))
                 out.append(_draft(ctx, "low", f"Page loads content over plain HTTP: {urlsplit(url).path or '/'}", "Web page", url,
                                   "This HTTPS page loads a resource from an http address.", "Anyone on the network can change that resource and so alter the page.",
-                                  f"GET {url}\nHTTP 200\nInsecure resource: {m.group(1)}", f"Open {url} and look for http:// addresses in the page source.",
-                                  "Load every resource over HTTPS.", REFS["hsts"]))
+                                  redact(f"GET {url}\nHTTP 200\nInsecure resource: {m.group(1)}"), f"Open {url} and look for http:// addresses in the page source.",
+                                  "Load every resource over HTTPS.", REFS["hsts"], confidence="suspected"))  # the resource itself is not requested
         try:
             t = _fetch(ctx, ctx.url, method="TRACE")
             if t.status_code == 200 and b"TRACE" in t.content[:200]:
@@ -92,8 +95,8 @@ def run(ctx) -> ModuleResult:
                                   "Echoed requests can help attackers read headers that scripts should not see.",
                                   build_evidence("TRACE", ctx.url, 200, t.headers, None, ("content-type",)),
                                   f"Run: curl -X TRACE -i {ctx.url}", "Disable the TRACE method in the web server.", CORS_REF, method="TRACE"))
-        except FAILS:
-            pass
+        except (Blocked, *FAILS):
+            pass  # a WAF or error on TRACE says nothing about the other checks
     except Blocked:
         blocked = True
     except RequestCapExceeded:

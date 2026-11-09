@@ -27,24 +27,24 @@
   "dest": "retire/jsrepository.json"
  },
  "eol": {
-  "version": "release-data@62d5df3fe76b383b95f3d7a252cf5df4b851d6d7",
-  "url": "https://raw.githubusercontent.com/endoflife-date/release-data/62d5df3fe76b383b95f3d7a252cf5df4b851d6d7/releases/{name}.json",
+  "version": "endoflife.date api snapshot 2026-11-09",
+  "url": "https://endoflife.date/api/{name}.json",
   "files": {
-   "python": "b789ba9d730717a606a7907900aafab350f432779583b83515246ca5d035efb4",
-   "nodejs": "8fe2f123e8933aac319678f6369dd1c0c5876bead2ed84f5acd7392d603e0841",
-   "php": "46ff6d5e98c2e8c15ad0cd4b83b539c849c00c37eb2a718c90887b637b63fad6",
-   "nginx": "d0a1dcb01b7699a4272bc92b8adaf743584cdcf42eb57f54e9876ad29e92c1e8",
-   "apache-http-server": "0fe444e9a0db7a6ec2404d2aa55b5dfb90e04f72a698500c0f335f783af9d27e",
-   "wordpress": "bd0401d58461115a3103a3127b72e1ef099946429178c35adfac6b6ce2722528",
-   "drupal": "a43802669040c5844c6ba515b8a67867d3954528be08f054c3b682b0fbf088f5",
-   "jquery": "7cd3914d4bd761f360b9b4430004abc3c6bf95645f2302c123bb95e65ac934f2",
-   "tomcat": "566a732c10efc0f8017a1697b934138e98cb0fa3e09fc2f48de54e69f6a51b78",
-   "openssl": "2a6a41dc266b3c1568a60e30c4f6dd5184ec9e8bb06f9e70c6e0430c5fa73e95",
-   "mysql": "d209b3b2775625095855e4ceec2835c3f35ee3becae89410ceb45772c8602bf7",
-   "postgresql": "c3c94aa13454ebb0f49a9bddde3686b4be28b61dfec592dc5590ebe9c863c70d",
-   "angular": "37f7ea487265a2379670648849aa055f1d637fb901d1e80e48541e6a22ad6293",
-   "django": "1a127d0ac3bf283676a26e6e72786bffd057dd71c0056c97ec3841d839c18060",
-   "laravel": "11af82e345dd28709e405ce45b519ce1aa7305048e5477e2c1a0de5206c13217"
+   "python": "3c81fa5ffc9aa399806cb45d46e857e9c6b192b6e2136a407b75eb6da0ca1fb4",
+   "nodejs": "0b2eadb5f1d5d43aef7f3fab28c2c1d7843d5b509a6eb740c055a367c4e963f7",
+   "php": "b693b12c92616cfe9449b8feeaffc51f01a57edc344c934a6971162698452dcb",
+   "nginx": "473168fe8237204aff5c5b06c16842b768106dc37b2507de91037b55d739b9ab",
+   "apache-http-server": "ab34ff3e9ce9ed845976bf903cf86e5346a87029b354f275d0b11051ec3e6d69",
+   "wordpress": "b8356c351d42ef4564b53bf1d5381bb5eee6791638bb8e8d63126d3aaad93e40",
+   "drupal": "04b3f5bcf62550dbc92f661148e19c235e8d5461ba3fa31dd11245ebeda2e94b",
+   "jquery": "8109310af6940c2d1e7dcbcb3e7039ae489a8211519e7df89f14320ede513caf",
+   "tomcat": "b478fdda8a8b054dfdf08803f0218c0c9410bac8ce5270d0cccc3aa1eea4a2c0",
+   "openssl": "9894b077946a9477b1750733f369d5b18cbc5d1777201dda2545709e334c5ce5",
+   "mysql": "4be2eea829d0d1055e93acfcbc7598f3f5e959629095cfaf35310687e17ef538",
+   "postgresql": "fc3bb141b6440b53bd8bdcac8993f65110b61d3aec1f487444906f3e50ba412b",
+   "angular": "90d4e5e5372648ec743ee603de4b3747772d014bf9c9aef86f906bdba5bfd7af",
+   "django": "45b6ea33dd4eaad3026826ed1d1ede7f2da90a623678f08e85c01fafc2805481",
+   "laravel": "334ae348d5a90c114b9b21a8b6eb319256eb67abd64a787eb40f21f13c8419d2"
   }
  },
  "fonts": [
