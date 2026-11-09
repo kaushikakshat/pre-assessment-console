@@ -1,5 +1,5 @@
 import { Link, useNavigate } from 'react-router-dom';
-import { Banner, Card, CapacityMeter, Disclaimer, LoadError, Loading, ModuleProgress, StatCard, StatusBadge } from '../components';
+import { Banner, Card, CapacityMeter, Disclaimer, LiveNote, LoadError, Loading, ModuleProgress, StatCard, StatusBadge } from '../components';
 import { BLOCKED_COPY } from '../lib/status';
 import { useLoad } from '../lib/useLoad';
 import type { Dashboard as DashboardData } from '../lib/types';
@@ -7,7 +7,7 @@ import { AssessmentTable, NewAssessmentLink } from './Assessments';
 
 export function Dashboard() {
   const nav = useNavigate();
-  const { data, error, reload } = useLoad<DashboardData>('/dashboard', (d) => (d.active_job ? 5000 : 0));
+  const { data, error, stalled, reload } = useLoad<DashboardData>('/dashboard', (d) => (d.active_job ? 5000 : 0));
   const job = data?.active_job;
   return (
     <div className="stack-lg">
@@ -18,6 +18,7 @@ export function Dashboard() {
       <Disclaimer />
       {error && !data && <LoadError error={error} thing="the dashboard" onRetry={reload} />}
       {!data && !error && <Loading />}
+      <LiveNote stalled={stalled} />
       {data && (
         <>
           {data.capacity.blocked_reason && (

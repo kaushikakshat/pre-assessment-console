@@ -14,6 +14,7 @@ interface Catalog { profiles: ProfileInfo[]; modules: ModuleInfo[] }
 interface Form { name: string; target: string; env: Environment; hosts: string; paths: string; ports: string; exclusions: string; notes: string }
 type Run = { mode: 'profile'; profile: ProfileKey } | { mode: 'modules'; modules: ModuleKey[] };
 
+const PROD_ONLY = 'Production targets can only be scanned with Quick Scan.';
 const EMPTY: Form = { name: '', target: '', env: 'Development', hosts: '', paths: '/*', ports: '443', exclusions: '', notes: '' };
 const STEPS = ['Target & scope', 'Scan configuration', 'Review & submit'];
 
@@ -29,6 +30,16 @@ export function targetError(raw: string): string | null {
   if (numeric && !/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return 'Write the host as a name or a standard IP address, for example 192.0.2.10.';
   return null;
 }
+
+const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : ([1e7, 1e3, 4e3, 8e3, 1e11].join('-').replace(/[018]/g, (c) => (Number(c) ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (Number(c) / 4)))).toString(16))));
+
+/** Production allows Quick Scan only; applied wherever the run is read so a later env change cannot bypass it. */
+const forEnv = (run: Run, env: Environment, catalog: Catalog | null): Run => {
+  if (env !== 'Production') return run;
+  if (run.mode === 'profile') return run.profile === 'quick' ? run : { mode: 'profile', profile: 'quick' };
+  const quick = catalog?.profiles.find((p) => p.key === 'quick')?.modules ?? ['reach'];
+  return { mode: 'modules', modules: run.modules.filter((m) => quick.includes(m)) };
+};
 
 const hostOf = (t: string) => { try { return new URL(t.trim()).hostname; } catch { return ''; } };
 const fromAssessment = (a: Assessment): Form => ({ name: a.name, target: a.target, env: a.env, hosts: a.hosts, paths: a.paths, ports: a.ports, exclusions: a.exclusions, notes: a.notes ?? '' });
@@ -65,8 +76,9 @@ function WizardBody({ assessment: initial, scanRoute }: { assessment: Assessment
   const [errors, setErrors] = useState<Partial<Record<keyof Form, string>>>({});
   const [failure, setFailure] = useState<string | null>(null);
   const [validating, setValidating] = useState(false);
-  const [run, setRun] = useState<Run>({ mode: 'profile', profile: 'quick' });
+  const [rawRun, setRun] = useState<Run>({ mode: 'profile', profile: 'quick' });
   const catalog = useLoad<Catalog>(step >= 1 ? '/catalog' : null);
+  const run = forEnv(rawRun, form.env, catalog.data);
 
   const set = (k: keyof Form) => (e: { target: { value: string } }) => {
     setForm((f) => ({ ...f, [k]: e.target.value as never }));
@@ -136,7 +148,7 @@ function WizardBody({ assessment: initial, scanRoute }: { assessment: Assessment
             {outcome === 'allowed' && <Button variant="primary" disabled={!required} onClick={() => setStep(1)}>Continue to scan configuration</Button>}
             {outcome === 'approval' && (
               <>
-                {user?.role === 'admin' && <p className="muted">As an administrator you can self-approve this target from its assessment page.</p>}
+                {user?.role === 'admin' && <p className="muted">As an administrator you can approve your own target from its assessment page, with a reason that is flagged in the audit log.</p>}
                 <Button variant="primary" onClick={() => nav(`/assessments/${assessment!.id}`)}>Save and request approval</Button>
               </>
             )}
@@ -197,11 +209,11 @@ function Configure({ form, catalog, run, setRun, onBack, onNext }: {
           <button type="button" aria-pressed={run.mode === 'profile'} onClick={() => setRun({ mode: 'profile', profile: 'quick' })}>Scan profile</button>
           <button type="button" aria-pressed={run.mode === 'modules'} onClick={() => setRun({ mode: 'modules', modules: ['reach'] })}>Individual modules</button>
         </div>
-        {prod && <Banner tone="info">Production targets can only be scanned with Quick Scan.</Banner>}
+        {prod && <Banner tone="info">{PROD_ONLY}</Banner>}
         {run.mode === 'profile' ? (
           <ProfileGrid label="Scan profile">
             {c.profiles.map((p) => (
-              <ProfileCard key={p.key} name="profile" profile={prod && p.key !== 'quick' ? { ...p, available: false } : p}
+              <ProfileCard key={p.key} name="profile" profile={prod && p.key !== 'quick' ? { ...p, available: false } : p} unavailableText={prod && p.key !== 'quick' ? PROD_ONLY : undefined}
                 selected={run.mode === 'profile' && run.profile === p.key} onSelect={() => setRun({ mode: 'profile', profile: p.key })} />
             ))}
           </ProfileGrid>
@@ -209,10 +221,11 @@ function Configure({ form, catalog, run, setRun, onBack, onNext }: {
           <div className="opt-grid">
             {c.modules.map((m) => {
               const locked = m.key === 'reach';
-              const off = !m.available || (prod && !quickModules.includes(m.key));
+              const prodOff = prod && !quickModules.includes(m.key);
+              const off = !m.available || prodOff;
               return (
                 <OptionCard key={m.key} title={m.name} checked={locked || selected.includes(m.key)} disabled={locked || off}
-                  description={locked ? 'Always runs first.' : off ? 'Not available in this release' : m.description} onChange={() => toggle(m.key)} />
+                  description={locked ? 'Always runs first.' : prodOff ? PROD_ONLY : off ? 'Not available in this release' : m.description} onChange={() => toggle(m.key)} />
               );
             })}
           </div>
@@ -241,7 +254,7 @@ function Configure({ form, catalog, run, setRun, onBack, onNext }: {
 function Review({ assessment, form, run, catalog, policy, onBack }: {
   assessment: Assessment; form: Form; run: Run; catalog: Catalog | null; policy: string; onBack: () => void;
 }) {
-  const [key] = useState(() => crypto.randomUUID()); // one key per review screen: a retry returns the same job
+  const [key] = useState(uuid); // one key per review screen: a retry returns the same job
   const [authorized, setAuthorized] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<{ unavailable: boolean; text: string } | null>(null);
@@ -299,6 +312,7 @@ function Review({ assessment, form, run, catalog, policy, onBack }: {
           { label: 'Policy', value: policy, mono: true },
         ]} />
         <p className="muted">Queue limits: <TbdMarker label="TBD" od={10} /></p>
+        {cap.error && !capacity && <Banner tone="danger" title="Capacity unknown">Current capacity could not be loaded, so Submit is disabled. <button type="button" className="btn btn-secondary btn-sm" onClick={cap.reload}>Try again</button></Banner>}
         {blocked && <Banner tone="danger" title="New scans are blocked">{BLOCKED_COPY[blocked]}</Banner>}
         {error?.unavailable && (
           <Banner tone="danger">Service unavailable — your scan was not submitted. No job ID was returned, so nothing is queued. Check Scan Queue before trying again.</Banner>
@@ -307,7 +321,7 @@ function Review({ assessment, form, run, catalog, policy, onBack }: {
         <Checkbox checked={authorized} onChange={(e) => setAuthorized(e.target.checked)} label="I confirm I am authorized to test this target within the scope above." />
         <div className="filters">
           <Button onClick={onBack}>Back</Button>
-          <Button variant="primary" disabled={!authorized || !!blocked} busy={busy} busyLabel="Submitting…" onClick={submit}>Submit scan</Button>
+          <Button variant="primary" disabled={!authorized || !!blocked || !capacity} busy={busy} busyLabel="Submitting…" onClick={submit}>Submit scan</Button>
         </div>
       </Card>
       <div className="stack sticky">

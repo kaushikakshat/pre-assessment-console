@@ -18,3 +18,5 @@ export function LoadError({ error, thing, onRetry }: { error: ApiError; thing: s
     </Banner>
   );
 }
+
+export const LiveNote = ({ stalled }: { stalled: boolean }) => (stalled ? <p className="muted" role="status">Live updates paused — retrying.</p> : null);

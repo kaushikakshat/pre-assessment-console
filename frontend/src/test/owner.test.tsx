@@ -5,7 +5,7 @@ import { App } from '../App';
 import { AuthProvider } from '../auth/AuthContext';
 import { ToastProvider } from '../components';
 
-const me = { id: 'U-001', name: 'Asha Rao', email: 'asha@example.test', role: 'owner', team: null };
+let me: Record<string, unknown> = { id: 'U-001', name: 'Asha Rao', email: 'asha@example.test', role: 'owner', team: null };
 const json = (status: number, body?: unknown) => new Response(body === undefined ? null : JSON.stringify(body), { status });
 const capacity = { active: 0, limit: 1, effective_limit: 1, queued: 0, healthy_workers: 1, ceiling: 3, blocked_reason: null };
 const catalog = {
@@ -44,7 +44,7 @@ function mockApi(routes: Record<string, Handler | Response | object>) {
 const mount = (path: string) => render(
   <MemoryRouter initialEntries={[path]}><AuthProvider><ToastProvider><App /></ToastProvider></AuthProvider></MemoryRouter>,
 );
-afterEach(() => { vi.restoreAllMocks(); document.cookie = 'pa_csrf=; expires=Thu, 01 Jan 1970 00:00:00 GMT'; });
+afterEach(() => { vi.useRealTimers(); me = { ...me, role: 'owner' }; vi.restoreAllMocks(); document.cookie = 'pa_csrf=; expires=Thu, 01 Jan 1970 00:00:00 GMT'; });
 
 async function toReview(user: ReturnType<typeof userEvent.setup>) {
   await user.click(await screen.findByRole('button', { name: 'Continue to review' }));
@@ -121,4 +121,77 @@ it('a 401 from a data endpoint signs the user out', async () => {
   mockApi({ '/assessments': json(401, { detail: 'Not signed in.' }) });
   mount('/assessments');
   expect(await screen.findByLabelText(/Work email/)).toBeTruthy();
+});
+
+it('Production cannot be combined with a non-Quick profile chosen under another environment', async () => {
+  const cat = { ...catalog, profiles: [catalog.profiles[0], { ...catalog.profiles[1], available: true }] };
+  const draft = { ...assessment, status: 'draft', validation: null };
+  const allowed = { outcome: 'allowed', checks: [], normalized_target: 'https://shop.example.com/', policy_version: 'v1', decided_at: '2026-11-09T08:50:00Z' };
+  const calls = mockApi({
+    '/catalog': cat, '/queue': { capacity },
+    'POST /assessments': json(201, draft), 'PATCH /assessments/A-0001': json(200, draft),
+    'POST /assessments/A-0001/validate': json(200, allowed),
+    'POST /jobs': json(202, { id: 'JOB-1', state: 'queued', queue_position: 1, wait_estimate: null }),
+  });
+  const user = userEvent.setup();
+  mount('/assessments/new');
+  await user.type(await screen.findByLabelText(/Assessment name/), 'Shop');
+  await user.type(screen.getByLabelText(/Target URL/), 'https://shop.example.com');
+  await user.click(screen.getByRole('button', { name: 'Validate target' }));
+  await user.click(await screen.findByRole('button', { name: 'Continue to scan configuration' }));
+  await user.click(await screen.findByLabelText(/Pre-Assessment/));
+  await user.click(screen.getByRole('button', { name: 'Back' }));
+  await user.selectOptions(screen.getByLabelText(/Environment/), 'Production');
+  await user.click(screen.getByRole('button', { name: 'Validate target' }));
+  await user.click(await screen.findByRole('button', { name: 'Continue to scan configuration' }));
+  expect((await screen.findByLabelText(/Pre-Assessment/) as HTMLInputElement).disabled).toBe(true);
+  expect((screen.getAllByRole('radio')[0] as HTMLInputElement).checked).toBe(true);
+  expect(screen.getAllByText('Production targets can only be scanned with Quick Scan.').length).toBeGreaterThan(0);
+  await toReview(user);
+  await user.click(screen.getByLabelText(/I confirm I am authorized/));
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Submit scan' }) as HTMLButtonElement).disabled).toBe(false));
+  await user.click(screen.getByRole('button', { name: 'Submit scan' }));
+  await waitFor(() => expect(calls.find((c) => c.path === '/jobs')?.body.profile).toBe('quick'));
+});
+
+it('keeps polling after a failed poll and shows a paused note', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  let failing = false; // the shell also reads /dashboard, so fail by phase rather than by call count
+  const job = { id: 'JOB-1', assessment_id: 'A-0001', assessment_name: 'Shop', state: 'running', modules: [], queue_position: null };
+  document.cookie = 'pa_csrf=tok';
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+    const path = String(url).replace('/api', '');
+    if (path === '/auth/me') return json(200, me);
+    if (path !== '/dashboard') return json(404, { detail: 'No.' });
+    if (failing) throw new TypeError('offline');
+    return json(200, { counts: { assessments: 1, open_findings: 0, active_jobs: 1 }, active_job: job, recent: [], capacity });
+  });
+  mount('/dashboard');
+  await screen.findByText('Active scan');
+  failing = true;
+  await vi.advanceTimersByTimeAsync(5100);
+  expect(await screen.findByText('Live updates paused — retrying.')).toBeTruthy();
+  expect(screen.getByText('Active scan')).toBeTruthy();
+  failing = false;
+  await vi.advanceTimersByTimeAsync(5100);
+  await waitFor(() => expect(screen.queryByText('Live updates paused — retrying.')).toBeNull());
+});
+
+it('Approve my target requires a note and posts the decision', async () => {
+  me = { ...me, role: 'admin' };
+  const awaiting = { ...assessment, status: 'awaiting-approval' };
+  const calls = mockApi({
+    '/assessments/A-0001': awaiting, '/assessments/A-0001/jobs': [], '/assessments/A-0001/findings': [], '/queue': { capacity },
+    'POST /admin/approvals/A-0001': { ...assessment },
+  });
+  const user = userEvent.setup();
+  mount('/assessments/A-0001');
+  await user.click(await screen.findByRole('button', { name: 'Approve my target' }));
+  const dlg = within(screen.getByRole('dialog'));
+  expect(dlg.getByText('Self-approval')).toBeTruthy();
+  const approve = dlg.getByRole('button', { name: 'Approve' }) as HTMLButtonElement;
+  expect(approve.disabled).toBe(true);
+  await user.type(dlg.getByLabelText(/Note/), 'Own staging site');
+  await user.click(approve);
+  await waitFor(() => expect(calls.find((c) => c.path === '/admin/approvals/A-0001')?.body).toEqual({ decision: 'approve', note: 'Own staging site' }));
 });

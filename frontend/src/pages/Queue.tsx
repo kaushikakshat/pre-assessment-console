@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, ApiError } from '../lib/api';
-import { Banner, Button, CapacityMeter, ConfirmDialog, DataTable, LoadError, Loading, StatusBadge, useToast, type Column } from '../components';
+import { Banner, Button, CapacityMeter, ConfirmDialog, DataTable, LiveNote, LoadError, Loading, StatusBadge, useToast, type Column } from '../components';
 import { relativeTime } from '../lib/format';
 import { BLOCKED_COPY, PROFILE_NAMES } from '../lib/status';
 import { useLoad } from '../lib/useLoad';
@@ -17,7 +17,7 @@ const run = (j: Job) => (j.profile ? PROFILE_NAMES[j.profile] : 'Individual modu
 const jobLink = (j: Job) => <Link to={`/assessments/${j.assessment_id}`}>{j.assessment_name}</Link>;
 
 export function Queue() {
-  const { data, error, reload } = useLoad<QueueData>('/queue', () => 5000);
+  const { data, error, stalled, reload } = useLoad<QueueData>('/queue', () => 5000);
   const toast = useToast();
   const [cancelling, setCancelling] = useState<Job | null>(null);
   const [busy, setBusy] = useState(false);
@@ -29,6 +29,7 @@ export function Queue() {
     try {
       await api(`/jobs/${cancelling.id}/cancel`, { method: 'POST' });
       toast(`${cancelling.id} cancel requested.`);
+      setFailure(null);
       reload();
     } catch (e) {
       setFailure(e instanceof ApiError ? e.detail : 'The scan could not be cancelled. Try again.');
@@ -46,7 +47,7 @@ export function Queue() {
     { key: 'pos', header: 'Position · wait', render: (j) => (j.queue_position === null ? '—' : `#${j.queue_position}${j.wait_estimate ? ` · approx. ${j.wait_estimate.lo_min}–${j.wait_estimate.hi_min} min` : ''}`) },
     { key: 'st', header: 'Status', render: (j) => <StatusBadge kind="job" status={j.state} /> },
     { key: 'x', header: <span className="sr-only">Actions</span>, render: (j) => (
-      <Button size="sm" variant="danger-outline" disabled={j.state === 'cancelling'} onClick={() => setCancelling(j)}>Cancel</Button>
+      <Button size="sm" variant="danger-outline" aria-label={`Cancel ${j.id}`} disabled={j.state === 'cancelling'} onClick={() => setCancelling(j)}>Cancel</Button>
     ) },
   ];
   const platformCols: Column<Slot>[] = [
@@ -67,6 +68,7 @@ export function Queue() {
       <h1>Scan Queue</h1>
       {error && !data && <LoadError error={error} thing="the scan queue" onRetry={reload} />}
       {!data && !error && <Loading />}
+      <LiveNote stalled={stalled} />
       {failure && <Banner tone="danger" title="Cancel failed">{failure} Check the queue below, then try again.</Banner>}
       {data && (
         <>

@@ -12,15 +12,15 @@ export function ProfileGrid({ label, children }: { label: string; children: Reac
   return <div role="radiogroup" aria-label={label} className="profile-grid">{children}</div>;
 }
 
-export function ProfileCard({ profile, name, selected, onSelect, disabledModules = [] }: {
-  profile: ProfileInfo; name: string; selected: boolean; onSelect: () => void; disabledModules?: ModuleKey[];
+export function ProfileCard({ profile, name, selected, onSelect, disabledModules = [], unavailableText = 'Not available in this release.' }: {
+  profile: ProfileInfo; name: string; selected: boolean; onSelect: () => void; disabledModules?: ModuleKey[]; unavailableText?: string;
 }) {
   const off = !profile.available;
   return (
     <label className={`profile${selected ? ' selected' : ''}${off ? ' disabled' : ''}`}>
       <input type="radio" name={name} checked={selected} disabled={off} onChange={onSelect} />
       <span className="profile-name">{profile.name}</span>
-      <span>{off ? 'Not available in this release.' : profile.description}</span>
+      <span>{off ? unavailableText : profile.description}</span>
       <span className="profile-meta">Duration <b>{profile.duration}</b> · Impact <b>{profile.impact}</b></span>
       <span className="chips">
         {profile.modules.map((m) => (

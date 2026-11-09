@@ -1,15 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
-  Banner, Button, Card, ConfidenceTag, DataTable, Disclaimer, EmptyState, KeyValue, LoadError, Loading, ModuleProgress, SeverityBadge,
+  ApprovalDecision, LiveNote, useToast, Banner, Button, Card, ConfidenceTag, DataTable, Disclaimer, EmptyState, KeyValue, LoadError, Loading, ModuleProgress, SeverityBadge,
   SeverityBar, Select, StatusBadge, Tabs, Timeline, Checkbox, type Column,
 } from '../components';
 import { formatIST, relativeTime } from '../lib/format';
 import { can } from '../lib/perm';
-import { BLOCKED_COPY, PROFILE_NAMES } from '../lib/status';
+import { BLOCKED_COPY, CONFIDENCE, PROFILE_NAMES, VOCAB } from '../lib/status';
+import { useAuth } from '../auth/AuthContext';
 import { useLoad } from '../lib/useLoad';
 import {
-  CONFIDENCES, FINDING_STATES, SEVERITIES, type Assessment, type AuditEvent, type Capacity, type Finding, type FindingState, type Job, type Severity,
+  CONFIDENCES, FINDING_STATES, SEVERITIES, type Assessment, type AuditEvent, type Capacity, type ModuleInfo, type Finding, type FindingState, type Job, type Severity,
 } from '../lib/types';
 import { SEVERITY } from '../lib/status';
 import { FindingDrawer } from './FindingDrawer';
@@ -27,6 +28,10 @@ export function AssessmentDetail() {
   const jobs = useLoad<Job[]>(`/assessments/${id}/jobs`);
   const findings = useLoad<Finding[]>(`/assessments/${id}/findings`);
   const queue = useLoad<{ capacity: Capacity }>('/queue');
+  const catalog = useLoad<{ modules: ModuleInfo[] }>('/catalog');
+  const { user } = useAuth();
+  const toast = useToast();
+  const [deciding, setDeciding] = useState(false);
 
   const activeId = jobs.data?.find((j) => ACTIVE.includes(j.state))?.id ?? null;
   const live = useLoad<Job>(activeId ? `/jobs/${activeId}` : null, (j) => (ACTIVE.includes(j.state) ? 3000 : 0));
@@ -47,7 +52,7 @@ export function AssessmentDetail() {
   const blocked = queue.data?.capacity.blocked_reason ?? null;
   const scanReason = as.status === 'awaiting-approval' ? 'Waiting for an administrator to approve this target.'
     : blocked ? BLOCKED_COPY[blocked] : null;
-  const moduleName = (k: string) => latest?.modules.find((m) => m.key === k)?.name ?? k;
+  const moduleName = (k: string) => latest?.modules.find((m) => m.key === k)?.name ?? catalog.data?.modules.find((m) => m.key === k)?.name ?? k;
   const finding = params.get('finding');
   const closeDrawer = () => { const n = new URLSearchParams(params); n.delete('finding'); setParams(n, { replace: true }); };
 
@@ -70,6 +75,7 @@ export function AssessmentDetail() {
               ? <Link className="btn btn-primary btn-md btn-link" to={`/assessments/new?from=${as.id}`}>Edit & revalidate</Link>
               : <Button variant="primary" icon="plus" disabled={as.status !== 'active' || !!blocked} onClick={() => nav(`/assessments/${as.id}/scan`)}>New scan</Button>}
             {scanReason && <small className="muted">{scanReason}</small>}
+            {user?.role === 'admin' && as.status === 'awaiting-approval' && <Button variant="primary" icon="shield" onClick={() => setDeciding(true)}>Approve my target</Button>}
           </div>
         )}
       </div>
@@ -87,6 +93,12 @@ export function AssessmentDetail() {
           Scan queued — another scan is using the available capacity.{latest.queue_position !== null && ` #${latest.queue_position} in queue`}
           {latest.wait_estimate && `, approx. ${latest.wait_estimate.lo_min}–${latest.wait_estimate.hi_min} min`}.
         </Banner>
+      )}
+
+      <LiveNote stalled={live.stalled} />
+      {deciding && (
+        <ApprovalDecision assessment={as} own onClose={() => setDeciding(false)}
+          onDecided={(d) => { setDeciding(false); toast(d === 'approve' ? 'Target approved.' : 'Target refused.'); reloadAssessment(); }} />
       )}
 
       <Tabs tabs={[
@@ -125,7 +137,7 @@ function Overview({ as, latest, findings }: { as: Assessment; latest?: Job; find
           {!findings ? <Loading /> : (
             <>
               <SeverityBar counts={sev} />
-              <p>{CONFIDENCES.map((c) => `${list.filter((f) => f.confidence === c).length} ${c}`).join(' · ')}</p>
+              <p>{CONFIDENCES.map((c) => `${list.filter((f) => f.confidence === c).length} ${CONFIDENCE[c].label}`).join(' · ')}</p>
               <p className="chips">
                 {FINDING_STATES.filter((s) => list.some((f) => f.state === s)).map((s) => (
                   <span key={s} className="chip">{list.filter((f) => f.state === s).length} <StatusBadge kind="finding" status={s} /></span>
@@ -185,9 +197,9 @@ function Findings({ rows, moduleName }: { rows: Finding[]; moduleName: (k: strin
     <>
       <div className="filters">
         <Select id="f-sev" label="Severity" value={f.severity} onChange={pick('severity')}><option value="">All</option>{SEVERITIES.map((s) => <option key={s} value={s}>{SEVERITY[s].label}</option>)}</Select>
-        <Select id="f-state" label="State" value={f.state} onChange={pick('state')}><option value="">All</option>{FINDING_STATES.map((s) => <option key={s} value={s}>{s}</option>)}</Select>
+        <Select id="f-state" label="State" value={f.state} onChange={pick('state')}><option value="">All</option>{FINDING_STATES.map((s) => <option key={s} value={s}>{VOCAB.finding[s].label}</option>)}</Select>
         <Select id="f-mod" label="Module" value={f.module} onChange={pick('module')}><option value="">All</option>{modules.map((m) => <option key={m} value={m}>{moduleName(m)}</option>)}</Select>
-        <Select id="f-conf" label="Confidence" value={f.confidence} onChange={pick('confidence')}><option value="">All</option>{CONFIDENCES.map((c) => <option key={c} value={c}>{c}</option>)}</Select>
+        <Select id="f-conf" label="Confidence" value={f.confidence} onChange={pick('confidence')}><option value="">All</option>{CONFIDENCES.map((c) => <option key={c} value={c}>{CONFIDENCE[c].label}</option>)}</Select>
         <Checkbox checked={group} onChange={(e) => setGroup(e.target.checked)} label="Group by module" />
       </div>
       {shown.length === 0 ? (
