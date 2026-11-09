@@ -5,12 +5,36 @@ import time
 from app.engine import zap as _zap
 
 from .base import ModuleResult
-from .crawl import accounts, as_account, context
+from .crawl import accounts, as_account, clear_quiet, context, harvest
+
+R = "[REDACTED]"
+
+
+def emit(ctx) -> list:
+    """Drafts for every harvested alert not yet reported; session cookie values are masked first."""
+    rc, out = ctx.run_ctx, []
+    secrets = {v.strip().partition("=")[2] for c in (rc.get("sessions") or {}).values() for v in c.split(";")}
+    secrets = sorted((x for x in secrets if len(x) >= 4), key=len, reverse=True)
+    for key, (cred, a) in rc.get("alerts", {}).items():
+        if key in rc.setdefault("seen_alerts", set()):
+            continue
+        rc["seen_alerts"].add(key)
+        a = dict(a)
+        for k, v in a.items():
+            for x in secrets:
+                if isinstance(v, str):
+                    v = v.replace(x, R)
+            a[k] = v
+        d = _zap.alert_to_draft(a, ctx)
+        if cred:  # the same issue seen with another account is a separate finding
+            d.credential_id, d.fingerprint_key = cred, f"{d.fingerprint_key}:{cred}"
+        out.append(d)
+    return out
 
 
 def run(ctx) -> ModuleResult:
     rc, zap = ctx.run_ctx, ctx.run_ctx["zap"]
-    policy, seen = ("pa-deep" if rc.get("profile") == "deep" else "pa-safe"), rc.setdefault("seen_alerts", set())
+    policy = "pa-deep" if rc.get("profile") == "deep" else "pa-safe"
     drafts, untested, stopped, accts = [], 0, False, accounts(rc)
     try:
         for i, (cred, cookie) in enumerate(accts):
@@ -23,17 +47,10 @@ def run(ctx) -> ModuleResult:
             pct = zap.active_scan(ctx.url, context(ctx, cred), policy, time.monotonic() + left / (len(accts) - i))
             if pct < 100:
                 stopped, untested = True, untested + math.ceil(n * (100 - pct) / 100)
-            for a in zap.alerts(ctx.url):
-                key = a.get("id") or (a.get("pluginId"), a.get("url"), a.get("param"), a.get("method"))
-                if key in seen:
-                    continue
-                seen.add(key)
-                d = _zap.alert_to_draft(a, ctx)
-                if cred:  # the same issue seen with another account is a separate finding
-                    d.credential_id, d.fingerprint_key = cred, f"{d.fingerprint_key}:{cred}"
-                drafts.append(d)
+            harvest(ctx, cred)
     finally:
-        zap.clear_headers()
+        clear_quiet(zap)
+    drafts = emit(ctx)
     if stopped:
         return ModuleResult("completed-warnings", f"Stopped at the time limit; {untested} URLs not tested", drafts, untested=untested)
     return ModuleResult("completed", f"Active tests finished; {len(drafts)} issues reported", drafts)

@@ -76,6 +76,7 @@ services:
       -config connection.proxyChain.enabled=true
       -config connection.proxyChain.hostName=egress
       -config connection.proxyChain.port=3128
+      -notel -config start.checkForUpdates=false -config start.checkAddonUpdates=false
     healthcheck:  # the image default probes another port
       test: ["CMD-SHELL", "curl -fs 'http://localhost:8090/JSON/core/view/version/?apikey=${ZAP_API_KEY}' >/dev/null"]
       interval: 15s

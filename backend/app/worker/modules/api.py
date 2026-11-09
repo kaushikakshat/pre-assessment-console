@@ -5,7 +5,10 @@ from urllib.parse import urljoin, urlsplit
 from app.engine import zap as _zap
 
 from .base import ModuleResult
-from .crawl import context
+from .crawl import context, harvest
+from .dast import emit
+
+NOT_A_SPEC = {"bad_external_data", "url_not_found", "no_implementor"}  # ZAP: fetch failed or not an API description
 
 COMMON = ("/openapi.json", "/swagger.json", "/v3/api-docs")
 
@@ -32,17 +35,14 @@ def run(ctx) -> ModuleResult:
             if zap.import_openapi(url, cid) > 0:
                 found = url
                 break
-        except _zap.EngineError:  # this URL is not a readable description; try the next
-            continue
+        except _zap.EngineError as e:
+            if e.code not in NOT_A_SPEC:  # anything else is a real engine failure, not "no description"
+                raise
     if not found:
         return ModuleResult("skipped", "No API description found")
     pct = zap.active_scan(ctx.url, cid, "pa-deep", ctx.deadline)
-    seen, drafts = rc.setdefault("seen_alerts", set()), []
-    for a in zap.alerts(ctx.url):
-        key = a.get("id") or (a.get("pluginId"), a.get("url"), a.get("param"), a.get("method"))
-        if key not in seen:
-            seen.add(key)
-            drafts.append(_zap.alert_to_draft(a, ctx))
+    harvest(ctx, None)
+    drafts = emit(ctx)
     if pct < 100:
         return ModuleResult("completed-warnings", "Stopped at the time limit; some API endpoints were not tested", drafts, untested=1)
     return ModuleResult("completed", f"API endpoints tested; {len(drafts)} issues reported", drafts)

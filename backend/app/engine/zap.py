@@ -28,6 +28,9 @@ _ID_SEG = re.compile(r"^(\d+|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-
 
 class EngineError(Exception):
     """The engine answered but refused or garbled a call; the module fails with a plain detail."""
+    def __init__(self, msg, code=None):
+        super().__init__(msg)
+        self.code = code  # ZAP's own error code (e.g. bad_external_data) when it sent one
 
 
 class EngineDown(Exception):
@@ -52,7 +55,11 @@ class Zap:
         if r.status_code >= 500:
             raise EngineDown("The scanning engine is not running.")
         if r.status_code >= 400:  # ZAP refused the call (bad parameter, unknown scan): a failure, not an outage
-            raise EngineError(f"The scanning engine rejected {path} ({r.status_code}).")
+            try:
+                code = r.json().get("code")
+            except (ValueError, AttributeError):
+                code = None
+            raise EngineError(f"The scanning engine rejected {path} ({r.status_code}).", code)
         try:
             return r.json()
         except ValueError as e:
@@ -69,6 +76,8 @@ class Zap:
 
     def new_session(self) -> None:
         self._call("action", "core/action/newSession", overwrite="true")
+        for opt in ("spider/action/setOptionAcceptCookies", "core/action/setOptionHttpStateEnabled"):
+            self._call("action", opt, Boolean="false")  # only the injected Cookie header may identify an account
 
     def setup_context(self, name, include, exclude) -> int:
         cid = int(self._field(self._call("action", "context/action/newContext", contextName=name), "contextId", "newContext"))
