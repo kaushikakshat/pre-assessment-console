@@ -37,4 +37,4 @@ users, sessions (token hash), login_attempts, assessments, policy_versions, jobs
 - Dev-only internal-target rule allows `testtarget` when `APP_ENV=dev`; loopback/link-local/metadata never overridable.
 
 ## Run locally
-`cp .env.example .env`, `docker compose up --build --scale worker=2`, then `docker compose exec api python -m app.cli create-admin --email ... --name ...`. API on :8000 (dev only), UI on :8080. Tests: `docker compose up -d db && docker compose run --rm api pytest` (uses a separate `preassess_test` database).
+`cp .env.example .env`, `docker compose up --build --scale worker=2`, then `docker compose exec api python -m app.cli create-admin --email ... --name ...`. API on :8000 (dev only), UI on :8080. Tests: `docker compose --profile test run --rm test` (uses a separate `preassess_test` database).

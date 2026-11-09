@@ -9,5 +9,5 @@ docker compose exec api python -m app.cli create-admin --email you@example.com -
 ```
 
 Open http://localhost:8080 and sign in with the printed temporary password; you enrol MFA on first sign-in.
-Backend tests: `docker compose up -d db && docker compose run --rm api pytest`.
+Backend tests: `docker compose --profile test run --rm test`.
 See `docs/ARCHITECTURE.md` and `docs/API.md`.
