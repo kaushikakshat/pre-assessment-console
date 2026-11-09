@@ -1,6 +1,14 @@
+import json
+import re
+import shutil
 import socket
 import ssl
+import subprocess
+import tempfile
+from pathlib import Path
 from datetime import datetime, timezone
+
+from app.worker.subproc import clean_env
 
 from .base import REFS, FindingDraft, ModuleResult, location
 
@@ -78,9 +86,42 @@ def run(ctx) -> ModuleResult:
                                     f"{evidence}\nNegotiated: {s.version()}"))
         except (ssl.SSLError, OSError):
             pass  # offered and refused
-    if skipped:
-        return ModuleResult("completed-warnings", "Outdated protocol check could not run", out)
-    return ModuleResult("completed", f"Checked certificate and protocol versions (negotiated {version}); {len(out)} issue(s).", out)
+    deep, tool, note = ctx.run_ctx.get("profile") in ("pre", "deep"), None, ""
+    if deep:
+        found, tool, note = _testssl(ctx, ip)
+        out += found
+    if skipped or note:
+        return ModuleResult("completed-warnings", ". ".join(x for x in ("Outdated protocol check could not run" if skipped else "", note) if x), out, tool)
+    return ModuleResult("completed", f"Checked certificate and protocol versions (negotiated {version}){' and ran testssl.sh' if deep else ''}; {len(out)} issue(s).", out, tool)
+
+
+def _testssl(ctx, ip):
+    """Deep TLS checks with testssl.sh aimed only at the guard-checked address. -> (drafts, version, warning)."""
+    exe = shutil.which("testssl.sh")
+    if not exe:
+        return [], None, "Deep TLS checks are not available: testssl.sh is not installed."
+    m = re.search(r'(?m)^\s*(?:(?:readonly|declare -r)\s+)?VERSION="?([\w.]+)', Path(exe).resolve().read_text("utf-8", "replace")[:20000])
+    version = f"testssl.sh {m.group(1)}" if m else "testssl.sh"
+    # shortcut: `--jsonfile -` makes testssl write a file literally named "-" in the cwd, so a private temp file is used instead.
+    with tempfile.TemporaryDirectory() as d:
+        out_file = str(Path(d) / "out.json")
+        try:
+            subprocess.run([exe, "--quiet", "--jsonfile", out_file, "--ip", ip, "--warnings", "off", "--fast", f"{ctx.host}:{ctx.port}"],
+                           env=clean_env(), cwd=d, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=max(1, ctx.remaining()), check=False)
+            rows = json.loads(Path(out_file).read_text())
+        except subprocess.TimeoutExpired:
+            return [], version, "Deep TLS checks ran out of time."
+        except (OSError, ValueError):
+            return [], version, "Deep TLS checks could not be completed."
+    out = []
+    for r in rows:
+        sev = str(r.get("severity", "")).lower()
+        if sev in ("medium", "high", "critical"):
+            out.append(_finding(ctx, sev, f"TLS weakness: {r.get('id')}", f"testssl.sh reports {r.get('id')}: {r.get('finding')}",
+                                "Weak TLS settings can let attackers read or change traffic.", "Follow the testssl.sh finding to change the TLS configuration.",
+                                f"{ctx.host}:{ctx.port}\n{r.get('id')}: {str(r.get('finding'))[:300]}" + (f"\n{r['cve']}" if r.get("cve") else "")))
+    return out, version, ""
 
 
 def _lenient(only=None):

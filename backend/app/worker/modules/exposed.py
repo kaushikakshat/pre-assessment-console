@@ -5,6 +5,7 @@ import httpx
 from app.targets.safe_http import BlockedAddress
 from app.worker.redact import build_evidence, redact
 
+from . import wordlists
 from .base import REFS, Blocked, FindingDraft, ModuleResult, location
 
 _ENV = re.compile(rb"(?m)^[A-Z_]+=")
@@ -73,8 +74,16 @@ def run(ctx) -> ModuleResult:
             "Researchers and colleagues may not know whom to tell about a problem.",
             f"GET {ctx.url.rstrip('/')}{SECURITY_TXT}\nHTTP {r.status_code}", f"Run: curl -sI {ctx.url.rstrip('/')}{SECURITY_TXT}",
             "Publish /.well-known/security.txt with a Contact line (RFC 9116).", ["https://www.rfc-editor.org/rfc/rfc9116"]))
+    keys = [k for k in ctx.run_ctx.get("wordlists") or () if k.startswith("Discovery/")]
+    skipped = 0
+    if keys and not blocked:
+        found, status, skipped = wordlists.discover(ctx, keys)
+        out += found
+        blocked = status == "blocked"
     if blocked:  # keep what was found before the target pushed back
         return ModuleResult("inconclusive", "Target rate-limited or blocked the requests", out)
+    if skipped:
+        return ModuleResult("completed-warnings", f"Stopped at the time or request limit; {skipped} wordlist paths not tested.", out, untested=skipped)
     n = len(SIGNATURES) + 1
     if errors >= n:
         raise OSError("every request failed")

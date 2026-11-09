@@ -5,6 +5,7 @@ import time
 
 from app.engine import zap as _zap
 
+from . import wordlists
 from .base import ModuleResult
 from .crawl import accounts, as_account, clear_quiet, context, harvest
 
@@ -39,10 +40,12 @@ def run(ctx) -> ModuleResult:
     rc, zap = ctx.run_ctx, ctx.run_ctx["zap"]
     policy = "pa-deep" if rc.get("profile") == "deep" else "pa-safe"
     drafts, untested, stopped, accts = [], 0, False, accounts(rc)
+    fuzz_keys = [k for k in rc.get("wordlists") or () if k.startswith("Fuzzing/")]
+    zap_end = time.monotonic() + ctx.remaining() * (0.7 if fuzz_keys else 1)  # fuzzing gets the rest of the stage
     try:
         for i, (cred, cookie) in enumerate(accts):
             n = len(rc.get("pages", {}).get(cred) or ()) or 1
-            left = ctx.remaining()
+            left = zap_end - time.monotonic()
             if left <= 0:
                 stopped, untested = True, untested + n
                 continue
@@ -54,6 +57,13 @@ def run(ctx) -> ModuleResult:
     finally:
         clear_quiet(zap)
     drafts = emit(ctx)
+    blocked = False
+    if fuzz_keys:
+        found, status, skipped = wordlists.fuzz(ctx, fuzz_keys)
+        drafts, untested, blocked = drafts + found, untested + skipped, status == "blocked"
+        stopped |= bool(skipped)
+    if blocked:
+        return ModuleResult("inconclusive", "Target rate-limited or blocked the requests", drafts, untested=untested)
     if stopped:
         return ModuleResult("completed-warnings", f"Stopped at the time limit; {untested} URLs not tested", drafts, untested=untested)
     return ModuleResult("completed", f"Active tests finished; {len(drafts)} issues reported", drafts)

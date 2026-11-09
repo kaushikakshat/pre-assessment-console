@@ -106,7 +106,10 @@ ENGINE_DOWN = "The scanning engine is not running."
 def execute_module(key, ctx_args, timeout, stage_deadline=None, run_ctx=None):
     """-> (state, detail, findings, tool_version, untested). Never raises; every failure is plain and never 'completed'.
     stage_deadline (absolute monotonic) caps the module's own timeout; run_ctx is shared across the job's modules."""
-    client = SafeClient({ctx_args["host"]}, ctx_args["internal_hosts"], max_requests=REQUEST_CAPS.get(key, REQUEST_CAP),
+    rc = run_ctx if run_ctx is not None else {}
+    wl = bool(rc.get("wordlists")) and key in ("exposed", "dast")  # wordlist modules may use the profile's request cap
+    client = SafeClient({ctx_args["host"]}, ctx_args["internal_hosts"],
+                        max_requests=rc["request_cap"] if wl else REQUEST_CAPS.get(key, REQUEST_CAP),
                         resolver=ctx_args["resolver"])
     deadline = time.monotonic() + timeout
     ctx = Ctx(**{k: v for k, v in ctx_args.items() if k != "internal_hosts"}, client=client,
@@ -172,10 +175,12 @@ def run_job(job_id, worker, halt, resolver=socket.getaddrinfo):
         args["internal"] = internal
         args["internal_hosts"] = {} if internal is False else {p.host: internal}
         keys = list(db.scalars(select(ModuleRun.key).where(ModuleRun.job_id == job_id).order_by(ModuleRun.id)))
-        states, run_ctx, engine_down = [], {"profile": job.profile, "notes": a.notes or ""}, False
+        states, run_ctx, engine_down = [], {"profile": job.profile, "notes": a.notes or "", "wordlists": list(job.wordlists or [])}, False
         if "auth" in keys:
             load_accounts(db, a, run_ctx)
         limits = db.scalar(select(SchedulerConfig.profile_limits).where(SchedulerConfig.id == 1)) or {}
+        run_ctx["request_cap"] = limits.get(job.profile, {}).get("request_cap", REQUEST_CAP)
+        run_ctx["rate_per_s"] = limits.get(job.profile, {}).get("rate_per_s", 10)
         budget_s = limits.get(job.profile, {}).get("budget_min", {"pre": 30, "deep": 180}.get(job.profile)) if job.profile else None
         budget = stages.Budget(budget_s * 60, keys) if budget_s else None
         scope = {"hosts": {p.host}, "ports": args["permitted_ports"],
@@ -204,6 +209,8 @@ def run_job(job_id, worker, halt, resolver=socket.getaddrinfo):
                                                    ModuleRun.state == "queued").values(state="running", started_at=func.now()))
                 db.commit()
                 timeout, sd = TIMEOUTS.get(key, DEFAULT_TIMEOUT), None
+                if key == "exposed" and run_ctx["wordlists"] and budget_s:
+                    timeout = budget_s * 60 * stages.SPLIT["crawl"]  # discovery lists need more than the default 120 s
                 sd = budget.start(key) if budget and key in stages.MODULE_STAGE else None
                 if sd:
                     timeout = max(0.0, sd - time.monotonic())  # staged modules run to their share of the stage
