@@ -181,3 +181,25 @@ def test_tls_self_signed_and_hostname_mismatch(serve, cert, monkeypatch):
     monkeypatch.setenv("SSL_CERT_FILE", own[0])  # trusted and matching, 1 day validity -> expires soon
     r = tls.run(make_ctx(port, "https"))
     assert [(f.severity, f.title) for f in r.findings][:1] == [("low", "Certificate expires soon")]
+
+
+def test_exposed_keeps_findings_when_blocked_midway(serve):
+    routes = {"/.env": (200, [], b"A=b\n"), "/.git/HEAD": (200, [], b"ref: x"), "/server-status": (429, [], b"")}
+    r = exposed.run(make_ctx(serve(routes)))
+    assert r.state == "inconclusive" and r.detail == "Target rate-limited or blocked the requests"
+    assert {f.location["path"] for f in r.findings} == {"/.env", "/.git/HEAD"}
+
+
+def test_tls_outdated_protocol_check_cannot_run_or_refused(serve, cert, monkeypatch):
+    port = serve({}, cert("app.test"))
+    monkeypatch.setattr(tls, "_can_offer", lambda c: False)
+    r = tls.run(make_ctx(port, "https"))
+    assert r.state == "completed-warnings" and r.detail == "Outdated protocol check could not run"
+    assert any("self-signed" in f.title for f in r.findings)  # other TLS checks still reported
+    real = tls._lenient
+    monkeypatch.setattr(tls, "_lenient", lambda only=None: (_ for _ in ()).throw(ValueError("unsupported")) if only else real())
+    assert tls.run(make_ctx(port, "https")).state == "completed-warnings"  # no crash
+    monkeypatch.setattr(tls, "_lenient", real)
+    monkeypatch.setattr(tls, "_can_offer", lambda c: True)  # offered, server (TLS 1.2+) refuses -> not accepted
+    r = tls.run(make_ctx(port, "https"))
+    assert r.state == "completed" and not any("outdated" in f.title for f in r.findings)

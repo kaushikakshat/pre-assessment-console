@@ -5,7 +5,7 @@ import httpx
 from app.targets.safe_http import BlockedAddress
 from app.worker.redact import build_evidence, redact
 
-from .base import REFS, FindingDraft, ModuleResult, location
+from .base import REFS, Blocked, FindingDraft, ModuleResult, location
 
 _ENV = re.compile(rb"(?m)^[A-Z_]+=")
 _HTPASSWD = re.compile(rb":\$apr1\$|:\{SHA\}")
@@ -30,10 +30,13 @@ SECURITY_TXT = "/.well-known/security.txt"
 
 
 def run(ctx) -> ModuleResult:
-    out, errors = [], 0
+    out, errors, blocked = [], 0, False
     for path, (match, sev, what, show) in SIGNATURES.items():
         try:
             r = ctx.get(path)
+        except Blocked:
+            blocked = True
+            break
         except (httpx.HTTPError, OSError, TimeoutError, BlockedAddress):
             errors += 1
             continue
@@ -54,8 +57,12 @@ def run(ctx) -> ModuleResult:
             "Remove the file from the web root or block access to it, then rotate any secrets it contained.",
             [REFS["exposed"]]))
     try:
+        if blocked:
+            raise Blocked
         r = ctx.get(SECURITY_TXT)
         has = r.status_code == 200 and b"Contact:" in r.content
+    except Blocked:
+        blocked, has = True, True
     except (httpx.HTTPError, OSError, TimeoutError, BlockedAddress):
         errors, has = errors + 1, True  # unknown: do not claim it is missing
     if not has:
@@ -66,6 +73,8 @@ def run(ctx) -> ModuleResult:
             "Researchers and colleagues may not know whom to tell about a problem.",
             f"GET {ctx.url.rstrip('/')}{SECURITY_TXT}\nHTTP {r.status_code}", f"Run: curl -sI {ctx.url.rstrip('/')}{SECURITY_TXT}",
             "Publish /.well-known/security.txt with a Contact line (RFC 9116).", ["https://www.rfc-editor.org/rfc/rfc9116"]))
+    if blocked:  # keep what was found before the target pushed back
+        return ModuleResult("inconclusive", "Target rate-limited or blocked the requests", out)
     n = len(SIGNATURES) + 1
     if errors >= n:
         raise OSError("every request failed")

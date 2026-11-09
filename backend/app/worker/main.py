@@ -25,7 +25,7 @@ from app.worker.modules.base import Blocked, Ctx
 from app.worker.redact import redact
 
 log = logging.getLogger("worker")
-REQUEST_CAP, DEFAULT_TIMEOUT, LOOP_SECONDS, HEARTBEAT_SECONDS = 50, 120, 2, 10
+REQUEST_CAP, DEFAULT_TIMEOUT, LOOP_SECONDS, HEARTBEAT_SECONDS, MAX_MISSES = 50, 120, 2, 10, 3
 
 
 def _now():
@@ -42,6 +42,8 @@ def store_findings(db, job, assessment, module, drafts):
     """Dedupe by sha256(module|title|asset): a repeat only refreshes last_seen_at and the job reference."""
     db.execute(select(func.pg_advisory_xact_lock(assessment.id)))
     for d in drafts:
+        for f in ("title", "asset", "description", "impact", "reproduce", "remediation"):
+            setattr(d, f, redact(getattr(d, f)))  # header values reach these fields too
         fp = hashlib.sha256(f"{module}|{d.title}|{d.asset}".encode()).hexdigest()
         old = db.scalar(select(Finding).where(Finding.assessment_id == assessment.id, Finding.fingerprint == fp))
         if old:
@@ -181,21 +183,38 @@ def _safe_run(*a):
 
 
 def run_with_lease(job_id, name, stop):
-    halt = threading.Event()  # per job: set on SIGTERM or when the lease is lost
+    """Keeps the lease alive while the module thread runs. Returns only once that thread has ended (or the
+    process is stopping), so a worker never claims more work while a module is still sending traffic."""
+    halt = threading.Event()  # per job: set on SIGTERM, a lost lease, or too many missed heartbeats
     t = threading.Thread(target=_safe_run, args=(job_id, name, halt), daemon=True)
     t.start()
-    last = time.monotonic()
-    while t.is_alive():
-        t.join(1)
+    last, misses = time.monotonic(), 0
+    while t.is_alive() and not halt.is_set():
+        t.join(min(1, HEARTBEAT_SECONDS))
         if stop.is_set():
             halt.set()
             return
         if time.monotonic() - last >= HEARTBEAT_SECONDS and t.is_alive():
             last = time.monotonic()
-            with SessionLocal() as db:
-                if not heartbeat(db, name, job_id):
-                    halt.set()  # lease lost: stop writing, results are no longer ours
-                    return
+            try:
+                with SessionLocal() as db:
+                    misses = 0 if heartbeat(db, name, job_id) else MAX_MISSES
+            except Exception:
+                misses += 1
+                log.exception("heartbeat failed")
+            if misses >= MAX_MISSES:  # 3 x 10s is under the 60s lease: stop before the job can be reaped under us
+                halt.set()
+    while t.is_alive():  # halted: wait for the module to wind down; keep the worker itself marked healthy
+        t.join(min(1, HEARTBEAT_SECONDS))
+        if stop.is_set():
+            return
+        if time.monotonic() - last >= HEARTBEAT_SECONDS:
+            last = time.monotonic()
+            try:
+                with SessionLocal() as db:
+                    heartbeat(db, name)
+            except Exception:
+                log.exception("heartbeat failed")
 
 
 def main():

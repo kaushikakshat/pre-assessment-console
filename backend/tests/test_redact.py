@@ -21,3 +21,8 @@ def test_build_evidence_limits_and_selects():
     assert "set-cookie: " + R in ev and "a=b" not in ev
     assert "line19" in ev and "line20" not in ev
     assert "line0" not in build_evidence("GET", "http://t/", 200, {}, None)
+
+
+def test_redacts_url_userinfo():
+    out = redact("see https://admin:s3cret@db.example.com/x and ftp://u:p@h/")
+    assert "s3cret" not in out and "admin" not in out and "https://" + R + "@db.example.com/x" in out

@@ -61,14 +61,25 @@ def run(ctx) -> ModuleResult:
                                 f"{evidence}\nVerification: {e.verify_message}"))
         with _connect(ctx, ip, _lenient()) as s:  # still learn the protocol version
             version = s.version()
+    skipped = False
     for name, v in (("TLS 1.0", ssl.TLSVersion.TLSv1), ("TLS 1.1", ssl.TLSVersion.TLSv1_1)):
         try:
-            with _connect(ctx, ip, _lenient(v)) as s:
+            c = _lenient(v)
+            offered = _can_offer(c)
+        except (ValueError, ssl.SSLError):
+            offered = False
+        if not offered:  # a client that cannot offer the version says nothing about the server
+            skipped = True
+            continue
+        try:
+            with _connect(ctx, ip, c) as s:
                 out.append(_finding(ctx, "medium", f"Server accepts outdated {name}", f"The server completed a handshake using {name}.",
                                     "Old protocol versions have known weaknesses.", f"Disable {name} and allow TLS 1.2 or newer only.",
                                     f"{evidence}\nNegotiated: {s.version()}"))
         except (ssl.SSLError, OSError):
-            pass  # not accepted (or this client cannot offer it)
+            pass  # offered and refused
+    if skipped:
+        return ModuleResult("completed-warnings", "Outdated protocol check could not run", out)
     return ModuleResult("completed", f"Checked certificate and protocol versions (negotiated {version}); {len(out)} issue(s).", out)
 
 
@@ -79,3 +90,14 @@ def _lenient(only=None):
         c.set_ciphers("ALL:@SECLEVEL=0")
         c.minimum_version = c.maximum_version = only
     return c
+
+
+def _can_offer(context) -> bool:
+    """True when this client can actually produce a ClientHello for the context (no network involved)."""
+    try:
+        context.wrap_bio(ssl.MemoryBIO(), ssl.MemoryBIO(), server_hostname="probe.invalid").do_handshake()
+    except ssl.SSLWantReadError:
+        return True
+    except (ssl.SSLError, ValueError):
+        return False
+    return False

@@ -1,4 +1,5 @@
 import socket
+import time
 import threading
 
 import pytest
@@ -129,3 +130,33 @@ def test_halt_leaves_job_for_lease_expiry(setup):
     halt.set()
     wm.run_job(jid, w, halt, resolver=public)
     assert snapshot(jid)[0] == "running"
+
+
+def test_heartbeat_failure_halts_and_worker_waits_for_module_thread(monkeypatch):
+    monkeypatch.setattr(wm, "HEARTBEAT_SECONDS", 0.05)
+    monkeypatch.setattr(wm, "heartbeat", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db down")))
+    log = {}
+
+    def fake_run(job_id, name, halt, *a):
+        halt.wait(10)
+        log["halted"] = True
+        time.sleep(0.4)  # module still winding down after halt
+        log["done"] = time.monotonic()
+    monkeypatch.setattr(wm, "run_job", fake_run)
+    wm.run_with_lease(1, "w", threading.Event())
+    returned = time.monotonic()
+    assert log["halted"] and returned >= log["done"]  # no return (so no new claim) while the thread was alive
+
+
+def test_finding_text_fields_are_redacted_and_fingerprint_uses_redacted(setup):
+    w, aid, uid, fakes = setup
+    d = draft(title="Software version disclosed: Apache (admin@corp.com) x-token=abc123")
+    d.description, d.reproduce, d.asset = "Server: Apache (admin@corp.com)", "curl -H 'Authorization: Bearer abc.def'", "h"
+    fakes["headers"] = lambda ctx: ModuleResult("completed", "ok", [d])
+    jid = add_job(aid, uid)
+    claim(w)
+    run(jid, w)
+    with SessionLocal() as db:
+        (f,) = db.query(Finding).filter_by(assessment_id=aid).all()
+        blob = f.title + f.description + f.reproduce
+        assert "admin@corp.com" not in blob and "abc123" not in blob and "abc.def" not in blob and "[REDACTED]" in f.title
