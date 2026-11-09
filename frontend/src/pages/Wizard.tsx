@@ -23,7 +23,8 @@ export function effective(run: Run, x: Extras, wordlists: Wordlist[] = []): Extr
   const lists = x.lists.filter((k) => { const w = wordlists.find((l) => l.key === k); return !!w && (profile === 'deep' || w.category === 'discovery'); });
   return { lists, accounts: profile === 'deep' ? x.accounts : [] };
 }
-export const estimate = (lists: string[], wordlists: Wordlist[] = []) => lists.reduce((n, k) => n + (wordlists.find((w) => w.key === k)?.lines ?? 0), 0);
+/** Fuzzing lists cost 10 requests per line, discovery lists 1 (matches the server). */
+export const estimate = (lists: string[], wordlists: Wordlist[] = []) => lists.reduce((n, k) => { const w = wordlists.find((l) => l.key === k); return n + (w ? w.lines * (w.category === 'fuzzing' ? 10 : 1) : 0); }, 0);
 interface Form { name: string; target: string; env: Environment; hosts: string; paths: string; ports: string; exclusions: string; notes: string }
 type Run = { mode: 'profile'; profile: ProfileKey } | { mode: 'modules'; modules: ModuleKey[] };
 
@@ -258,7 +259,7 @@ function Configure({ form, catalog, run, setRun, extras, setExtras, signin, asse
             <legend className="group-title">Accounts to test as</legend>
             {signin?.accounts.map((a) => <Checkbox key={a.id} checked={extras.accounts.includes(a.id)} onChange={() => toggleAccount(a.id)} label={`${a.role_label} · ${a.username_hint}`} />)}
             {signin && !signin.accounts.length && <small className="muted">No test accounts yet.</small>}
-            {assessmentId && <Link to={`/assessments/${assessmentId}?tab=signin`}>Set up sign-in and accounts</Link>}
+            {assessmentId && <a href={`/assessments/${assessmentId}?tab=signin`} target="_blank" rel="noopener">Set up sign-in and accounts (opens in a new tab)</a>}
           </fieldset>
         )}
         {pd && !!c.wordlists?.length && (

@@ -20,7 +20,7 @@ export function Advanced({ wordlists, selected, deep, onToggle }: { wordlists: W
   };
   return (
     <div className="stack">
-      <button type="button" className="btn btn-secondary btn-sm" aria-expanded={open} aria-controls="advanced-panel" onClick={() => setOpen(!open)}>Advanced</button>
+      <button type="button" className="btn btn-secondary btn-sm" aria-expanded={open} aria-controls={open ? 'advanced-panel' : undefined} onClick={() => setOpen(!open)}>Advanced</button>
       {open && <div id="advanced-panel" className="stack">{group('Discovery lists', 'discovery')}{group('Fuzzing lists', 'fuzzing')}</div>}
     </div>
   );

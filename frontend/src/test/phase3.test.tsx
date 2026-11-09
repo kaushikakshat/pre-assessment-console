@@ -58,11 +58,12 @@ describe('sign-in tab', () => {
   });
 
   it('test_password_never_rendered_after_save', async () => {
-    mockApi({ ...base, '/catalog': catalog(), '/assessments/A-0001/signin': { setup: setup(), accounts: [{ id: 'C-1', role_label: 'Admin', username_hint: 'ad•••', last_test: 'ok', last_tested_at: '2026-11-09T08:00:00Z' }] },
+    const calls = mockApi({ ...base, '/catalog': catalog(), '/assessments/A-0001/signin': { setup: setup(), accounts: [{ id: 'C-1', role_label: 'Admin', username_hint: 'ad•••', last_test: 'ok', last_tested_at: '2026-11-09T08:00:00Z' }] },
+      'PUT /assessments/A-0001/signin': () => json(200, setup()),
       'POST /assessments/A-0001/accounts': () => json(201, { id: 'C-2', role_label: 'User', username_hint: 'us•••', last_test: null, last_tested_at: null, test_result: null }) });
     mount('/assessments/A-0001?tab=signin');
     const user = userEvent.setup();
-    expect(await screen.findByText('Set')).toBeTruthy(); // bypass code stored: no input
+    expect(await screen.findByRole('button', { name: 'Replace bypass code' })).toBeTruthy(); // bypass code stored: no input
     expect(screen.queryByLabelText(/Bypass code/)).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Add account' }));
     await user.type(screen.getByLabelText(/Role label/), 'User');
@@ -73,8 +74,24 @@ describe('sign-in tab', () => {
     await user.type(pw, 'S3cret-pw!');
     await user.click(screen.getByRole('button', { name: 'Save account' }));
     await screen.findByText('Account saved. It has not been tested.');
+    expect('bypass_code' in calls.find((c) => c.method === 'POST')!.body).toBe(false);
     expect(document.body.innerHTML).not.toContain('S3cret-pw!');
     expect((document.body as HTMLElement).querySelectorAll('input[value="S3cret-pw!"]').length).toBe(0);
+  });
+
+  it('setup PUT omits bypass_code unless typed; unmapped 422 fields reach a banner', async () => {
+    let n = 0;
+    const calls = mockApi({ ...base, '/catalog': catalog(), '/assessments/A-0001/signin': { setup: setup({ style: 'two-step' }), accounts: [] },
+      'PUT /assessments/A-0001/signin': () => (n++ ? json(200, setup()) : json(422, { detail: { fields: { otp_url: 'The login page must be on an in-scope host.', port: 'Port not permitted.' } } })) });
+    mount('/assessments/A-0001?tab=signin');
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Save sign-in setup' }));
+    expect(await screen.findByText('Port not permitted.')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Save sign-in setup' }));
+    await waitFor(() => expect(calls.filter((c) => c.method === 'PUT').length).toBe(2));
+    const put = calls.find((c) => c.method === 'PUT')!.body;
+    expect('bypass_code' in put).toBe(false);
+    expect(put.code_field).toBeNull();
   });
 
   it('test_test_signin_requires_authorization_checkbox', async () => {
@@ -92,9 +109,12 @@ describe('sign-in tab', () => {
     expect((save as HTMLInputElement).disabled).toBe(true);
     await user.click(screen.getByLabelText(/I confirm I am authorized/));
     expect((save as HTMLInputElement).disabled).toBe(false);
+    await user.type(screen.getByLabelText(/Bypass code \(used/), '123456');
     await user.click(save);
     expect(await screen.findByText('Wait before testing sign-in again.')).toBeTruthy();
-    expect(calls.find((c) => c.method === 'POST')!.body).toMatchObject({ test: true, authorized: true });
+    expect(calls.find((c) => c.method === 'POST')!.body).toMatchObject({ test: true, authorized: true, bypass_code: '123456' });
+    expect((screen.getByLabelText(/^Password \*/) as HTMLInputElement).value).toBe('');
+    expect((screen.getByLabelText(/^Username \*/) as HTMLInputElement).value).toBe('root');
   });
 });
 
@@ -124,6 +144,8 @@ describe('wizard', () => {
     await user.click(screen.getByRole('radio', { name: /Deep Scan/ }));
     expect((screen.getByLabelText(/XSS payloads/) as HTMLInputElement).disabled).toBe(false);
     expect(screen.getByLabelText(/Admin · ad•••/)).toBeTruthy();
+    await user.click(screen.getByLabelText(/XSS payloads/));
+    expect(screen.getByText('About 1,000 extra requests')).toBeTruthy();
   });
 
   it('test_over_cap_disables_continue', async () => {
