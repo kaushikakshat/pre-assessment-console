@@ -3,6 +3,7 @@ import http.server
 import json
 import socket
 import threading
+import time
 
 import pytest
 
@@ -253,3 +254,18 @@ def test_control_slowloris_times_out(echo):
         s.sendall(b"PUT /scope HTTP/1.1\r\nX-Egress-Token: tok\r\nContent-Length: 100\r\n\r\n{")
         assert s.recv(100) == b""
     assert control(cp, "PUT", "/scope", token="bad")[0] == 401
+
+
+def test_delete_for_other_job_is_a_noop_and_ttl_expires_scope():
+    st = EgressState(resolver_to("127.0.0.1"), allow_all)
+    _, cp = start(st)
+    body = {"job_id": "j", "hosts": ["target.test"], "ports": [80], "internal": {}}
+    assert control(cp, "PUT", "/scope", {**body, "ttl_s": 1})[0] == 204
+    assert control(cp, "DELETE", "/scope?job_id=other")[0] == 204 and st.active
+    assert st.allowed("target.test", 80)[1] is None
+    time.sleep(1.2)
+    assert st.allowed("target.test", 80)[1] == "no active scope"  # expired even before the reaper tick
+    time.sleep(1.2)
+    assert not st.active and json.loads(control(cp, "GET", "/stats")[1])["job_id"] is None
+    assert control(cp, "PUT", "/scope", {**body, "ttl_s": -1})[0] == 400
+    assert control(cp, "PUT", "/scope", body)[0] == 204 and control(cp, "DELETE", "/scope?job_id=j")[0] == 204 and not st.active

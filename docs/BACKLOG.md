@@ -37,3 +37,4 @@ Triaged in the final whole-branch review. Pre-UAT items are already fixed; these
 - B4: token-only userinfo (https://token@host) not redacted
 - B5: CSV formula guard untested; CSV export silently capped at 500; wid int→422 vs 404; invented caps on aging/queue/quota bounds; no test for statement_timeout; scheduled-job cancel 409; resume doesn't check other active job
 - Worker: on graceful shutdown (SIGTERM) clear its own heartbeat so a replaced worker stops counting as healthy immediately (today it counts for up to 30s after a restart, so an admin could briefly raise the limit above real capacity)
+- Egress scope covers the target host only (the validated host). Links to other in-scope hosts are reported as untested. — deviation recorded during Task 6

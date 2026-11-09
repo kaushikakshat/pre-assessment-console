@@ -226,6 +226,8 @@ def put_capacity(body: CapacityIn, admin=Depends(sec.require_admin), db=Depends(
     if body.limit > cfg.concurrency_limit and body.limit > (n := admission.healthy_workers(db)):
         raise HTTPException(422, f"Only {n} healthy {'worker is' if n == 1 else 'workers are'} available. "
                                  f"Enable or provision more workers before raising the limit to {body.limit}.")
+    if body.engine_slots is not None and body.engine_slots > 1:  # one ZAP and one egress scope cannot isolate two jobs
+        raise HTTPException(422, "Only one scanning engine is provisioned.")
     new = {"concurrency_limit": body.limit, "aging_enabled": body.aging_enabled, "aging_minutes": body.aging_minutes,
            "queue_cap": body.queue_cap, "per_user_quota": body.per_user_quota}
     if body.engine_slots is not None:

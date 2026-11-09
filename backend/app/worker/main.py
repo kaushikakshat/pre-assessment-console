@@ -18,7 +18,7 @@ from app.core.audit import record
 from app.core import crypto
 from app.core.startup import validate_env
 from app.engine import stages
-from app.engine.zap import EngineDown
+from app.engine.zap import EngineDown, EngineError
 from app.db import SessionLocal
 from app.models import Assessment, Finding, Job, ModuleRun, PolicyVersion, SchedulerConfig, Worker
 from app.scheduler.admission import ACTIVE, ENGINE_MODULES, claim_next, heartbeat, reap_expired
@@ -90,6 +90,8 @@ def execute_module(key, ctx_args, timeout, stage_deadline=None, run_ctx=None):
         return r.state, r.detail, r.findings, r.tool_version, r.untested
     except EngineDown:
         return "unavailable", ENGINE_DOWN, [], None, 0
+    except EngineError as e:
+        return "failed", str(e), [], None, 0
     except Blocked:
         return "inconclusive", "Target rate-limited or blocked the requests", [], None, 0
     except (TimeoutError, RequestCapExceeded):
@@ -143,9 +145,10 @@ def run_job(job_id, worker, halt, resolver=socket.getaddrinfo):
         args["internal"] = internal
         args["internal_hosts"] = {} if internal is False else {p.host: internal}
         keys = list(db.scalars(select(ModuleRun.key).where(ModuleRun.job_id == job_id).order_by(ModuleRun.id)))
-        states, run_ctx, engine_down, stage = [], {}, False, None
+        states, run_ctx, engine_down = [], {}, False
         limits = db.scalar(select(SchedulerConfig.profile_limits).where(SchedulerConfig.id == 1)) or {}
-        budget = stages.Budget(limits[job.profile]["budget_min"] * 60) if job.profile in limits else None
+        budget_s = limits.get(job.profile, {}).get("budget_min", {"pre": 30, "deep": 180}.get(job.profile)) if job.profile else None
+        budget = stages.Budget(budget_s * 60, keys) if budget_s else None
         scope = {"hosts": {p.host}, "ports": args["permitted_ports"],
                  "internal": {h: None if n is None else [str(x) for x in n] for h, n in args["internal_hosts"].items()}}
         for key in keys:
@@ -159,9 +162,9 @@ def run_job(job_id, worker, halt, resolver=socket.getaddrinfo):
                             else "The assessment is no longer approved for scanning")
             if key in ENGINE_MODULES and key in MODULES and not engine_down and "session" not in run_ctx:
                 try:
-                    s = stack.enter_context(stages.EngineSession(job, a, scope))
+                    s = stack.enter_context(stages.EngineSession(job, a, scope, ttl_s=(budget_s * 60 if budget_s else 3600) + 120))
                     run_ctx.update(session=s, zap=s.zap, exclude=s.exclude)
-                except EngineDown:
+                except (EngineDown, EngineError):
                     engine_down = True
             if key not in MODULES:
                 state, detail, found, tool, untested = "unavailable", "Not available in this release", [], None, 0
@@ -172,13 +175,12 @@ def run_job(job_id, worker, halt, resolver=socket.getaddrinfo):
                                                    ModuleRun.state == "queued").values(state="running", started_at=func.now()))
                 db.commit()
                 timeout, sd = TIMEOUTS.get(key, DEFAULT_TIMEOUT), None
-                st = stages.MODULE_STAGE.get(key) if budget else None
-                if st:
-                    if stage and stage != st:
-                        budget.end(stage)
-                    stage, sd = st, budget.start(st)
-                    timeout = max(0.0, sd - time.monotonic())  # staged modules run to their stage deadline
+                sd = budget.start(key) if budget and key in stages.MODULE_STAGE else None
+                if sd:
+                    timeout = max(0.0, sd - time.monotonic())  # staged modules run to their share of the stage
                 state, detail, found, tool, untested = execute_module(key, args, timeout, sd, run_ctx)
+            if budget and key in stages.MODULE_STAGE:
+                budget.end(key)  # unused time flows to the next module or stage
             if halt.is_set():
                 return
             # Guarded on state='running' (or queued for unavailable): a reaped job's module is no longer ours to write.

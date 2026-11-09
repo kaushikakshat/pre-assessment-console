@@ -26,6 +26,10 @@ SEVERITY = {"High": "high", "Medium": "medium", "Low": "low", "Informational": "
 _ID_SEG = re.compile(r"^(\d+|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$")
 
 
+class EngineError(Exception):
+    """The engine answered but refused or garbled a call; the module fails with a plain detail."""
+
+
 class EngineDown(Exception):
     """The scanning engine (or its egress guard) cannot be reached."""
 
@@ -43,19 +47,31 @@ class Zap:
         try:
             r = (self._http.get if kind == "view" else self._http.post)(
                 f"{self.base}/JSON/{path}/", **({"params": params} if kind == "view" else {"data": params}))
-            r.raise_for_status()
+        except httpx.HTTPError as e:
+            raise EngineDown("The scanning engine is not running.") from e
+        if r.status_code >= 500:
+            raise EngineDown("The scanning engine is not running.")
+        if r.status_code >= 400:  # ZAP refused the call (bad parameter, unknown scan): a failure, not an outage
+            raise EngineError(f"The scanning engine rejected {path} ({r.status_code}).")
+        try:
             return r.json()
-        except (httpx.HTTPError, ValueError) as e:
-            raise EngineDown("The scanning engine is not running.") from e  # str(e) can hold the URL, so not chained in text
+        except ValueError as e:
+            raise EngineError(f"The scanning engine returned an unreadable answer for {path}.") from e
+
+    def _field(self, r, key, path):
+        try:
+            return r[key]
+        except (KeyError, TypeError) as e:
+            raise EngineError(f"The scanning engine answered {path} without {key}.") from e
 
     def version(self) -> str:
-        return self._call("view", "core/view/version")["version"]
+        return self._field(self._call("view", "core/view/version"), "version", "version")
 
     def new_session(self) -> None:
         self._call("action", "core/action/newSession", overwrite="true")
 
     def setup_context(self, name, include, exclude) -> int:
-        cid = int(self._call("action", "context/action/newContext", contextName=name)["contextId"])
+        cid = int(self._field(self._call("action", "context/action/newContext", contextName=name), "contextId", "newContext"))
         self._ctx[cid] = name
         for rx in include:
             self._call("action", "context/action/includeInContext", contextName=name, regex=rx)
@@ -75,7 +91,7 @@ class Zap:
         """Polls until 100% or the deadline; on the deadline the scan is stopped and the partial progress returned."""
         pct = 0
         while True:
-            pct = int(self._call("view", f"{comp}/view/status", scanId=scan_id)["status"])
+            pct = int(self._field(self._call("view", f"{comp}/view/status", scanId=scan_id), "status", "status"))
             if pct >= 100:
                 return 100
             if time.monotonic() + self.poll >= deadline:
@@ -84,10 +100,10 @@ class Zap:
             time.sleep(self.poll)
 
     def spider(self, url, context_id, max_children, deadline) -> list[str]:
-        sid = self._call("action", "spider/action/scan", url=url, maxChildren=max_children, recurse="true",
-                         contextName=self._ctx[context_id], subtreeOnly="true")["scan"]
+        sid = self._field(self._call("action", "spider/action/scan", url=url, maxChildren=max_children, recurse="true",
+                                     contextName=self._ctx[context_id], subtreeOnly="true"), "scan", "spider scan")
         self._wait("spider", sid, deadline)
-        return self._call("view", "spider/view/results", scanId=sid)["results"]
+        return self._field(self._call("view", "spider/view/results", scanId=sid), "results", "spider results")
 
     def import_openapi(self, url, context_id) -> int:
         r = self._call("action", "openapi/action/importUrl", url=url, contextId=context_id)
@@ -98,7 +114,7 @@ class Zap:
             return
         if name not in POLICIES:
             raise ValueError("policy")
-        have = {p["name"] for p in self._call("view", "ascan/view/policies").get("scanPolicies", [])}
+        have = set(self._call("view", "ascan/view/scanPolicyNames").get("scanPolicyNames", []))
         if name not in have:
             self._call("action", "ascan/action/addScanPolicy", scanPolicyName=name)
         self._call("action", "ascan/action/disableAllScanners", scanPolicyName=name)
@@ -110,14 +126,14 @@ class Zap:
 
     def active_scan(self, url, context_id, policy, deadline) -> int:
         self._ensure_policy(policy)
-        sid = self._call("action", "ascan/action/scan", url=url, contextId=context_id, scanPolicyName=policy,
-                         recurse="true")["scan"]
+        sid = self._field(self._call("action", "ascan/action/scan", url=url, contextId=context_id, scanPolicyName=policy,
+                                     recurse="true"), "scan", "active scan")
         return self._wait("ascan", sid, deadline)
 
     def alerts(self, base_url) -> list[dict]:
         out, start = [], 0
         while True:
-            page = self._call("view", "core/view/alerts", baseurl=base_url, start=start, count=500)["alerts"]
+            page = self._field(self._call("view", "core/view/alerts", baseurl=base_url, start=start, count=500), "alerts", "alerts")
             out += page
             if len(page) < 500:
                 return out
@@ -133,7 +149,7 @@ def alert_to_draft(alert: dict, ctx) -> FindingDraft:
     u, param = urlsplit(alert.get("url", "")), alert.get("param", "")
     path = normalize_path(u.path or "/")
     d = FindingDraft(
-        SEVERITY.get(alert.get("risk"), "info"), "confirmed" if alert.get("confidence") in ("High", "Confirmed") else "suspected",
+        SEVERITY.get(alert.get("risk"), "info"), "confirmed" if alert.get("confidence") in ("High", "Confirmed", "User Confirmed") else "suspected",
         alert.get("alert") or alert.get("name") or "Scanner finding", u.hostname or ctx.host,
         location(ctx, "Endpoint", path=u.path or "/", port=u.port, method=alert.get("method"), param=param or None,
                  url=alert.get("url")),

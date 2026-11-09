@@ -205,10 +205,10 @@ def test_audit_filters_and_csv(sched):
 def test_capacity_engine_slots_audited(sched):
     adm = signin(make_user("admin"))
     body = {"limit": 1, "aging_enabled": True, "aging_minutes": 15, "queue_cap": 50, "per_user_quota": 5, **R}
-    r = adm.put("/api/admin/capacity", json={**body, "engine_slots": 2}).json()
-    assert r["config"]["engine_slots"] == 2 and "engine_slots 1 -> 2" in r["history"][0]["detail"]
+    r = adm.put("/api/admin/capacity", json={**body, "engine_slots": 2})
+    assert r.status_code == 422 and r.json()["detail"] == "Only one scanning engine is provisioned."
     assert adm.put("/api/admin/capacity", json={**body, "engine_slots": 4}).status_code == 422
-    adm.put("/api/admin/capacity", json={**body, "engine_slots": 1})
+    assert adm.put("/api/admin/capacity", json={**body, "engine_slots": 1}).json()["config"]["engine_slots"] == 1
 
 
 def test_profile_limits_range(sched):

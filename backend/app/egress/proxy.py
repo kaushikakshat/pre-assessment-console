@@ -6,7 +6,8 @@ import ipaddress
 import json
 import socket
 import threading
-from urllib.parse import urlsplit
+import time
+from urllib.parse import parse_qs, urlsplit
 
 from app.targets import ipguard
 from app.targets.safe_http import default_guard
@@ -26,9 +27,9 @@ class EgressState:
         self._lock = threading.RLock()  # allowed() runs in worker threads; control handlers run on the loop
         self._conns: set = set()  # writers of live tunnels (event-loop only)
         self.active, self.job_id, self.connections, self.refused = False, None, 0, 0
-        self.hosts, self.ports, self.internal = set(), set(), {}
+        self.hosts, self.ports, self.internal, self.expires = set(), set(), {}, None
 
-    def set_scope(self, job_id, hosts, ports, internal):
+    def set_scope(self, job_id, hosts, ports, internal, ttl_s=None):
         """Validates everything first, then swaps the scope in one step. Must be called on the event loop
         (or before serving) because it closes live tunnels."""
         if not isinstance(job_id, str) or not job_id:
@@ -39,6 +40,8 @@ class EgressState:
             raise ValueError("ports")
         if not isinstance(internal, dict):
             raise ValueError("internal")
+        if ttl_s is not None and not (type(ttl_s) in (int, float) and 0 < ttl_s <= 86400):
+            raise ValueError("ttl_s")
         new_internal = {}
         for h, n in internal.items():
             if not isinstance(h, str) or not (n is None or (isinstance(n, list) and all(isinstance(x, str) for x in n))):
@@ -47,15 +50,29 @@ class EgressState:
         new_hosts, new_ports = {ipguard.normalize_host(h) for h in hosts}, set(ports)
         with self._lock:
             self.active, self.job_id = True, job_id
+            self.expires = None if ttl_s is None else time.monotonic() + ttl_s  # self-expiring if the worker dies
             self.hosts, self.ports, self.internal = new_hosts, new_ports, new_internal
             self.connections = self.refused = 0
         self.close_all()
 
-    def clear(self):
-        """Drops the scope and live tunnels; stats stay readable until the next set_scope."""
+    def clear(self, job_id=None):
+        """Drops the scope and live tunnels (counters stay readable; job_id becomes None). With job_id, only if it
+        is the active job's: a late DELETE from an old job must not end a newer job's scope."""
         with self._lock:
-            self.active, self.hosts, self.ports, self.internal = False, set(), set(), {}
+            if job_id is not None and job_id != self.job_id:
+                return
+            self.active, self.job_id, self.hosts, self.ports, self.internal, self.expires = False, None, set(), set(), {}, None
         self.close_all()
+
+    def _expired(self):
+        return self.expires is not None and time.monotonic() >= self.expires
+
+    def expire(self):
+        """Event-loop tick: drops an expired scope together with its tunnels."""
+        with self._lock:
+            due = self.active and self._expired()
+        if due:
+            self.clear()
 
     def stats(self):
         with self._lock:
@@ -78,7 +95,7 @@ class EgressState:
 
     def _check(self, host, port):
         with self._lock:  # snapshot; the (slow) DNS lookup happens outside the lock
-            active, hosts, ports, internal = self.active, self.hosts, self.ports, self.internal
+            active, hosts, ports, internal = self.active and not self._expired(), self.hosts, self.ports, self.internal
         if not active:
             return None, "no active scope"
         try:
@@ -176,7 +193,9 @@ async def _handle_proxy(state, sem, cr, cw):
 
 async def _control_request(state, token, cr):
     line, headers = await _read_head(cr)
-    method, path, _ = line.split(" ", 2)
+    method, target, _ = line.split(" ", 2)
+    u = urlsplit(target)
+    path, query = u.path, parse_qs(u.query)
     h = {k.strip().lower(): v.strip() for k, _, v in (x.partition(":") for x in headers)}
     if not hmac.compare_digest(h.get("x-egress-token", "").encode(), token.encode()):
         return 401, b""  # before any body is read
@@ -186,10 +205,10 @@ async def _control_request(state, token, cr):
     raw = await cr.readexactly(n) if n else b""
     if (method, path) == ("PUT", "/scope"):
         d = json.loads(raw)
-        state.set_scope(d["job_id"], d["hosts"], d["ports"], d.get("internal") or {})
+        state.set_scope(d["job_id"], d["hosts"], d["ports"], d.get("internal") or {}, d.get("ttl_s"))
         return 204, b""
     if (method, path) == ("DELETE", "/scope"):
-        state.clear()
+        state.clear((query.get("job_id") or [None])[0])
         return 204, b""
     if (method, path) == ("GET", "/stats"):
         return 200, json.dumps(state.stats()).encode()
@@ -216,5 +235,9 @@ async def serve(listen=("0.0.0.0", 3128), control=("0.0.0.0", 3129), *, token: s
     state, sem = state or EgressState(), asyncio.Semaphore(MAX_CONNS)
     ps = await asyncio.start_server(lambda r, w: _handle_proxy(state, sem, r, w), *listen)
     cs = await asyncio.start_server(lambda r, w: _handle_control(state, token, r, w), *control)
+    async def reaper():
+        while True:
+            state.expire()
+            await asyncio.sleep(1)
     async with ps, cs:
-        await asyncio.gather(ps.serve_forever(), cs.serve_forever())
+        await asyncio.gather(ps.serve_forever(), cs.serve_forever(), reaper())

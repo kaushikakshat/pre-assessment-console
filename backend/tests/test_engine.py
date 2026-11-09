@@ -1,5 +1,6 @@
 import http.server
 import json
+import re
 import socket
 import threading
 import time
@@ -9,7 +10,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 from app.engine import stages
-from app.engine.zap import EngineDown, Zap, alert_to_draft
+from app.engine.zap import EngineDown, EngineError, Zap, alert_to_draft
 from app.worker import main as wm
 from app.worker.modules.base import ModuleResult
 from test_scheduler import add_job, claim, make_assessment, sched, workers  # noqa: F401
@@ -74,7 +75,11 @@ def test_engine_session_clears_scope_when_zap_is_down():
 
 def test_exclusions_cover_never_list_assessment_and_login():
     ex = stages.excluded_regexes(ASSESSMENT, ["https://app.example.com/login"])
-    assert ex[0] == stages.NEVER and ".*/admin/.*.*" in ex and any("login" in e for e in ex)
+    hit = lambda u: any(re.fullmatch(e, u) for e in ex)  # noqa: E731  ZAP full-matches
+    for u in ("https://a/account/delete?id=1", "https://a/Logout", "https://a/user/password/change",
+              "https://a/admin/x/y", "https://a/billing?x=1", "https://app.example.com/login?next=/"):
+        assert hit(u), u
+    assert not hit("https://a/products/12")
 
 
 def test_alert_mapping_and_fingerprint_stable_across_ids():
@@ -93,19 +98,31 @@ def test_alert_mapping_and_fingerprint_stable_across_ids():
 
 def test_budget_rollover():
     now = [1000.0]
-    b = stages.Budget(100, clock=lambda: now[0])
+    b = stages.Budget(100, ["crawl", "dast", "api", "access"], clock=lambda: now[0])
     assert b.start("crawl") == 1030
     now[0] += 10  # crawl used 10 of 30 seconds
     b.end("crawl")
-    assert b.start("active") == now[0] + 50 + 20
-    now[0] += 70
-    b.end("active")
+    assert b.start("dast") == now[0] + 70 / 2  # active stage = 50 + 20 rolled over, shared by dast and api
+    now[0] += 5
+    b.end("dast")
+    assert b.start("api") == now[0] + 65  # dast's leftover goes to api, which gets the rest
+    now[0] += 65
+    b.end("api")
     assert b.start("access") == now[0] + 20
+
+
+def test_budget_skipped_stage_rolls_forward():
+    now = [0.0]
+    b = stages.Budget(100, ["dast"], clock=lambda: now[0])  # no crawl scheduled: its 30s reach the active stage
+    assert b.start("dast") == 80
+    now[0] = 80
+    b.end("dast")
+    assert b.start("access") == 100
 
 
 def test_active_scan_deadline_returns_partial_and_counts_untested(sched, monkeypatch):  # noqa: F811
     f = Fake({"/JSON/ascan/action/scan/": (200, {"scan": "7"}), "/JSON/ascan/view/status/": (200, {"status": "40"}),
-              "/JSON/ascan/view/policies/": (200, {"scanPolicies": []}),
+              "/JSON/ascan/view/scanPolicyNames/": (200, {"scanPolicyNames": []}),
               "/JSON/ascan/view/scanners/": (200, {"scanners": [{"id": "40012"}, {"id": "6"}]})})
     z = Zap(f.url, "k", poll=0.01)
     assert z.active_scan("https://app.example.com/", 1, "pa-safe", time.monotonic() + 0.1) == 40
@@ -141,3 +158,23 @@ def test_engine_unreachable_module_unavailable(sched, monkeypatch):  # noqa: F81
     state, mods = snapshot(jid)
     assert mods["crawl"] == ("unavailable", "The scanning engine is not running.") and not called
     assert mods["reach"][0] == "completed" and state == "completed-warnings"
+
+
+def test_zap_4xx_is_engine_error_not_down_and_missing_field_is_clear():
+    f = Fake({"/JSON/core/view/version/": (400, {}), "/JSON/ascan/action/scan/": (200, {}),
+              "/JSON/ascan/view/scanPolicyNames/": (200, {"scanPolicyNames": ["pa-safe"]}),
+              "/JSON/ascan/view/scanners/": (200, {"scanners": []})})
+    z = Zap(f.url, "k")
+    with pytest.raises(EngineError):
+        z.version()
+    with pytest.raises(EngineError, match="without scan"):
+        z.active_scan("https://app.example.com/", 1, "pa-safe", time.monotonic() + 1)
+    f.replies["/JSON/core/view/version/"] = (503, {})
+    with pytest.raises(EngineDown):
+        z.version()
+    f.shutdown()
+
+
+def test_user_confirmed_counts_as_confirmed():
+    ctx = SimpleNamespace(host="h", port=443, url="https://h/")
+    assert alert_to_draft({"pluginId": "1", "risk": "Low", "confidence": "User Confirmed", "url": "https://h/x"}, ctx).confidence == "confirmed"
