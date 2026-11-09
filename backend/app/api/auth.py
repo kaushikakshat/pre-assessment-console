@@ -1,13 +1,13 @@
 import pyotp
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, update, delete
 from sqlalchemy.sql import func as sf
 
 from app.core import security as sec
 from app.core.audit import record
 from app.db import get_db
-from app.models import Session, User
+from app.models import LoginAttempt, Session, User
 
 router = APIRouter(prefix="/auth")
 ISSUER = "Pre-Assessment Console"
@@ -18,9 +18,9 @@ class LoginIn(BaseModel):
     password: str = Field(max_length=256)
 
 
-class PasswordIn(BaseModel):
-    current_password: str = Field(max_length=256)
-    new_password: str = Field(max_length=256)
+class PasswordIn(BaseModel):  # lengths checked in the handler so errors keep the documented shapes
+    current_password: str
+    new_password: str
 
 
 class MfaIn(BaseModel):
@@ -101,19 +101,22 @@ def change_password(body: PasswordIn, request: Request, user=Depends(sec.signed_
                     sess=Depends(sec.current_session), db=Depends(get_db)):
     email = user.email.lower()
     sec.check_throttle(db, email, sec.client_ip(request))  # same per-email lock/limit as login
-    if not sec.verify_password(user, body.current_password):
+    if len(body.current_password) > 256 or not sec.verify_password(user, body.current_password):  # bound argon2 input
         sec.record_failure(db, email, sec.client_ip(request))
         record(db, user.email, "auth", "password-change", user.display_id, "failure", "Incorrect current password")
         db.commit()
         raise HTTPException(400, "Your current password is incorrect.")
-    if not 12 <= len(body.new_password) <= 256:
+    if len(body.new_password) < 12:
         raise HTTPException(422, {"fields": {"new_password": "Use at least 12 characters."}})
+    if len(body.new_password) > 256:
+        raise HTTPException(422, {"fields": {"new_password": "Use at most 256 characters."}})
     if body.new_password == body.current_password:
         raise HTTPException(422, {"fields": {"new_password": "Choose a password you have not just used."}})
     user.password_hash = sec.hash_password(body.new_password)
     user.must_change_password = False
     db.execute(update(Session).where(Session.user_id == user.id, Session.id != sess.id,
                                      Session.revoked_at.is_(None)).values(revoked_at=sf.now()))
+    db.execute(delete(LoginAttempt).where(LoginAttempt.email == email))
     record(db, user.email, "auth", "password-change", user.display_id, "success", "Password changed")
     db.commit()
     return me(user)

@@ -136,6 +136,7 @@ def signed_in_user(sess=Depends(current_session), db=Depends(get_db)) -> User:
     return user
 
 
+# New routes must depend on this (not signed_in_user) so the forced password change cannot be bypassed.
 def current_user(user=Depends(signed_in_user)) -> User:
     if user.must_change_password:
         raise HTTPException(403, "Change your temporary password to continue.")

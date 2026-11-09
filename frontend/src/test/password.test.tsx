@@ -73,3 +73,29 @@ it('shows a server field error inline', async () => {
   await user.click(screen.getByRole('button', { name: 'Change password' }));
   expect(await screen.findByText('Use at least 12 characters.')).toBeTruthy();
 });
+
+it('shows required-field errors on submit and marks the mismatched field invalid and focused', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => (String(url) === '/api/auth/me' ? json(200, me) : json(404, { detail: 'No.' })));
+  const user = userEvent.setup();
+  mount('/account/password');
+  await user.click(await screen.findByRole('button', { name: 'Change password' }));
+  expect(await screen.findByText('Enter your current password.')).toBeTruthy();
+  await fill(user, 'a brand new pass', 'something else!!');
+  await user.click(screen.getByRole('button', { name: 'Change password' }));
+  const c = await screen.findByLabelText(/Confirm new password/);
+  expect(c.getAttribute('aria-invalid')).toBe('true');
+  expect(document.activeElement).toBe(c);
+  expect(screen.getByText('Account')).toBeTruthy();
+});
+
+it('routes to the change-password page when any call returns the 403 temporary-password detail', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+    const p = String(url);
+    if (p === '/api/auth/me') return json(200, me);
+    if (p === '/api/dashboard') return json(200, dash);
+    if (p === '/api/assessments') return json(403, { detail: 'Change your temporary password to continue.' });
+    return json(404, { detail: 'No.' });
+  });
+  mount('/assessments');
+  expect(await screen.findByRole('heading', { name: 'Change password' })).toBeTruthy();
+});

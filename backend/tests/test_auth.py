@@ -267,6 +267,34 @@ def test_change_password_wrong_current_throttled():
     assert r.status_code == 429
 
 
+def test_change_password_length_bounds_keep_field_shape():
+    c = signin(make_user())
+    r = c.post("/api/auth/password", json={"current_password": PW, "new_password": "x" * 257})
+    assert r.status_code == 422 and r.json()["detail"]["fields"]["new_password"] == "Use at most 256 characters."
+    r = c.post("/api/auth/password", json={"current_password": "x" * 10000, "new_password": "a brand new pass"})
+    assert (r.status_code, r.json()["detail"]) == (400, "Your current password is incorrect.")
+
+
+def test_must_change_user_can_logout_and_mfa():
+    email = make_user()
+    c = signin(email)
+    _flag(email)
+    assert c.post("/api/auth/logout").status_code == 204
+    with SessionLocal() as db, db.begin():
+        db.query(User).filter_by(email=email).one().last_totp_step = None
+    assert signin(email).get("/api/auth/me").json()["must_change_password"] is True
+
+
+def test_success_clears_login_failures():
+    email = make_user()
+    c = signin(email)
+    for _ in range(3):
+        c.post("/api/auth/password", json={"current_password": "x", "new_password": "a brand new pass"})
+    assert c.post("/api/auth/password", json={"current_password": PW, "new_password": "a brand new pass"}).status_code == 200
+    with SessionLocal() as db:
+        assert db.execute(text("SELECT count(*) FROM login_attempts WHERE email=:e"), {"e": email}).scalar() == 0
+
+
 def test_change_password_validation():
     c = signin(make_user())
     r = c.post("/api/auth/password", json={"current_password": PW, "new_password": "short"})

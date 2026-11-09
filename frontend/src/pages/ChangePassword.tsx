@@ -19,7 +19,12 @@ export function ChangePassword() {
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setError('');
-    if (next !== confirm) { setFields({ confirm: 'The passwords do not match.' }); return; }
+    const missing: Record<string, string> = {};
+    if (!current) missing.current_password = 'Enter your current password.';
+    if (!next) missing.new_password = 'Enter a new password.';
+    if (!confirm) missing.confirm = 'Confirm your new password.';
+    if (Object.keys(missing).length) { setFields(missing); return; }
+    if (next !== confirm) { setFields({ confirm: 'The passwords do not match.' }); document.getElementById('confirm')?.focus(); return; }
     setFields({}); setBusy(true);
     try {
       const me = await api<Me>('/auth/password', { method: 'POST', body: { current_password: current, new_password: next } });
@@ -44,7 +49,7 @@ export function ChangePassword() {
           <TextField id="current" label="Current password" type="password" required autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} error={fields.current_password} />
           <TextField id="new" label="New password" type="password" required autoComplete="new-password" hint="At least 12 characters." value={next} onChange={(e) => setNext(e.target.value)} error={fields.new_password} />
           <TextField id="confirm" label="Confirm new password" type="password" required autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} error={fields.confirm} />
-          <div><Button type="submit" variant="primary" busy={busy} busyLabel="Changing…" disabled={!current || !next || !confirm}>Change password</Button></div>
+          <div><Button type="submit" variant="primary" busy={busy} busyLabel="Changing…">Change password</Button></div>
         </form>
       </Card>
     </div>
