@@ -1,11 +1,11 @@
 import os
 import re
-import threading
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
+from sqlalchemy import update as sql_update
 
 from app.core import security as sec
 from app.core.audit import record
@@ -130,8 +130,6 @@ def update(aid: str, body: In, user=Depends(sec.current_user), db=Depends(get_db
     return out
 
 
-# shortcut: in-flight tracking is per process (single api process in compose); move to a DB lock if scaled out.
-_running, _running_lock = set(), threading.Lock()
 VALIDATES_PER_MIN = 10
 
 
@@ -147,19 +145,24 @@ def validate(aid: str, user=Depends(sec.current_user), db=Depends(get_db)):
         AuditEvent.at > datetime.now(timezone.utc) - timedelta(minutes=1)))
     if recent >= VALIDATES_PER_MIN:
         raise HTTPException(429, "Too many validations. Wait a minute before trying again.")
-    with _running_lock:
-        if user.id in _running:
-            raise HTTPException(409, "A validation is already running for you.")
-        _running.add(user.id)
+    # Atomic lease: one in-flight validation per user across all API processes; expires if a process dies.
+    got = db.execute(sql_update(User).where(User.id == user.id, (User.validating_until.is_(None)) | (User.validating_until < func.now()))
+                     .values(validating_until=func.now() + text("interval '20 seconds'")))
+    db.commit()
+    if got.rowcount == 0:
+        raise HTTPException(409, "A validation is already running for you.")
     try:
         snap = (a.target, a.env, a.ports, a.hosts)
         policy = {**pv.rules, "version": pv.version}
-        db.commit()  # release the connection before any network I/O
         result = validate_target(*snap[:3], policy, hosts=snap[3], app_env=os.environ.get("APP_ENV", "prod"))
     finally:
-        with _running_lock:
-            _running.discard(user.id)
-    a = db.scalar(select(Assessment).where(Assessment.id == a.id).with_for_update())
+        db.execute(sql_update(User).where(User.id == user.id).values(validating_until=None))
+        db.commit()
+    # populate_existing: the identity map still holds the pre-validation object (expire_on_commit=False)
+    a = db.scalar(select(Assessment).where(Assessment.id == a.id).with_for_update()
+                  .execution_options(populate_existing=True))
+    if a is None:
+        raise HTTPException(404, "Not found.")
     if (a.target, a.env, a.ports, a.hosts) != snap:
         raise HTTPException(409, "The assessment changed while it was being validated. Validate again.")
     a.validation, a.policy_version = result, pv.version

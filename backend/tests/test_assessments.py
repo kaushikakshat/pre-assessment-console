@@ -1,9 +1,9 @@
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select, text, update
 
 from app.api import assessments as api
 from app.db import SessionLocal
-from app.models import AuditEvent
+from app.models import Assessment, AuditEvent
 from app.targets.validate import validate_target
 from test_auth import make_user, signin
 
@@ -104,14 +104,44 @@ def test_validate_limits(users, monkeypatch):
     fake_net(monkeypatch, {"app.example.com": ["93.184.216.34"]})
     aid = o1.post("/api/assessments", json=BODY).json()["id"]
     from app.models import User
-    with SessionLocal() as db:
-        uid = db.scalar(select(User.id).where(User.email == o1.get("/api/auth/me").json()["email"]))
-    api._running.add(uid)  # simulate a validation already in flight for this user
-    try:
-        r = o1.post(f"/api/assessments/{aid}/validate")
-        assert r.status_code == 409 and r.json()["detail"] == "A validation is already running for you."
-    finally:
-        api._running.discard(uid)
+    with SessionLocal() as db, db.begin():  # a lease held by another process/request
+        db.execute(update(User).where(User.email == o1.get("/api/auth/me").json()["email"])
+                   .values(validating_until=func.now() + text("interval '20 seconds'")))
+    r = o1.post(f"/api/assessments/{aid}/validate")
+    assert r.status_code == 409 and r.json()["detail"] == "A validation is already running for you."
+    with SessionLocal() as db, db.begin():  # expired lease is taken over
+        db.execute(update(User).where(User.email == o1.get("/api/auth/me").json()["email"])
+                   .values(validating_until=func.now() - text("interval '1 second'")))
     for _ in range(api.VALIDATES_PER_MIN):
         assert o1.post(f"/api/assessments/{aid}/validate").status_code == 200
     assert o1.post(f"/api/assessments/{aid}/validate").status_code == 429
+
+
+def test_edit_or_delete_during_validation(users, monkeypatch):
+    o1, *_ = users
+    real = validate_target
+    table = {"app.example.com": ["93.184.216.34"]}
+
+    def r(host, port, **kw):
+        return [(2, 1, 6, "", (ip, 0)) for ip in table[host]]
+
+    def during(action):
+        def fetch(url):
+            with SessionLocal() as db, db.begin():
+                a = db.scalar(select(Assessment).where(Assessment.display_id == aid))
+                if action == "edit":
+                    a.ports = "8080"
+                else:
+                    db.delete(a)
+            return 200, None
+        return lambda *a, **k: real(*a, resolver=r, fetch_redirect=fetch, **k)
+    for action, code in (("edit", 409), ("delete", 404)):
+        aid = o1.post("/api/assessments", json=BODY).json()["id"]
+        monkeypatch.setattr(api, "validate_target", during(action))
+        assert o1.post(f"/api/assessments/{aid}/validate").status_code == code
+        if action == "edit":
+            assert o1.get(f"/api/assessments/{aid}").json()["validation"] is None
+    # lease was released: a normal validation works right after
+    fake_net(monkeypatch, table)
+    aid = o1.post("/api/assessments", json=BODY).json()["id"]
+    assert o1.post(f"/api/assessments/{aid}/validate").status_code == 200

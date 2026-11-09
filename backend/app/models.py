@@ -31,6 +31,7 @@ class User(Base):
     mfa_enrolled: Mapped[bool] = mapped_column(Boolean, server_default="false")
     last_totp_step: Mapped[int | None] = mapped_column(BigInteger)
     last_login_at: Mapped[datetime | None] = _ts()
+    validating_until: Mapped[datetime | None] = _ts()
     created_at: Mapped[datetime] = _ts(server_default=NOW)
 
 
