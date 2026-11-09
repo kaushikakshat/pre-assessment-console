@@ -57,7 +57,7 @@ class PolicyVersion(Base):
     rules: Mapped[dict] = mapped_column(JSONB)
     published_at: Mapped[datetime] = _ts(server_default=NOW)
     published_by: Mapped[str | None] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(Text, server_default="active")
+    status: Mapped[str] = mapped_column(Text, server_default="published")
 
 
 class Assessment(Base):

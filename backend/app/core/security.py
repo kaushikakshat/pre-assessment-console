@@ -143,7 +143,7 @@ def require_admin(user=Depends(current_user)) -> User:
 
 # ---- RBAC (DESIGN_SYSTEM §11.2) ----
 _ALL = {"view", "generate_report", "change_finding_state", "comment", "retest", "scan",
-        "cancel_own_job", "share", "activity"}
+        "cancel_own_job", "share", "activity", "edit"}
 _CAPS = {"owner": _ALL, "admin": {"view", "generate_report", "activity"}}
 
 
