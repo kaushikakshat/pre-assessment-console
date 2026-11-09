@@ -5,9 +5,10 @@ import { ApprovalDecision, Banner, Button, DataTable, LoadError, Loading, Modal,
 import { formatIST, relativeTime } from '../../lib/format';
 import { PROFILE_NAMES } from '../../lib/status';
 import { useLoad } from '../../lib/useLoad';
-import { PRIORITIES, type Assessment, type Priority } from '../../lib/types';
-import { ownerName, useAct, type AdminJob } from './common';
+import { PRIORITIES, type Assessment, type AssessmentSummary, type Priority } from '../../lib/types';
+import { useAct, type AdminJob } from './common';
 
+type AdminAssessment = AssessmentSummary & { owner: { id: string; name: string } };
 interface Approval { assessment: Assessment; requested_at: string; own: boolean }
 const run = (j: AdminJob) => (j.profile ? PROFILE_NAMES[j.profile] : 'Individual modules');
 const done = (s: string) => s === 'completed' || s === 'completed-warnings';
@@ -26,8 +27,8 @@ export function AdminJobs() {
   return (
     <div className="stack-lg">
       <h1>Assessments / Jobs</h1>
-      <Tabs tabs={[{ key: 'approvals', label: 'Approval requests', count: approvals.data?.length }, { key: 'interrupted', label: 'Interrupted', count: unreviewed }, { key: 'jobs', label: 'Jobs' }]}>
-        {(tab) => tab === 'approvals' ? <Approvals load={approvals} /> : tab === 'interrupted' ? <Interrupted load={interrupted} /> : <Jobs onChanged={interrupted.reload} />}
+      <Tabs tabs={[{ key: 'approvals', label: 'Approval requests', count: approvals.data?.length }, { key: 'interrupted', label: 'Interrupted', count: unreviewed }, { key: 'jobs', label: 'Jobs' }, { key: 'all', label: 'All assessments' }]}>
+        {(tab) => tab === 'approvals' ? <Approvals load={approvals} /> : tab === 'interrupted' ? <Interrupted load={interrupted} /> : tab === 'jobs' ? <Jobs onChanged={interrupted.reload} /> : <AllAssessments />}
       </Tabs>
     </div>
   );
@@ -63,7 +64,7 @@ function Interrupted({ load }: { load: ReturnType<typeof useLoad<AdminJob[]>> })
   const cols: Column<AdminJob>[] = [
     { key: 'j', header: 'Job', mono: true, render: (j) => j.id },
     { key: 'a', header: 'Assessment', render: (j) => <Link to={`/assessments/${j.assessment_id}`}>{j.assessment_name}</Link> },
-    { key: 'o', header: 'Owner', render: (j) => ownerName(j.owner) },
+    { key: 'o', header: 'Owner', render: (j) => j.owner },
     { key: 's', header: 'Stopped', render: (j) => formatIST(j.ended_at ?? j.started_at) },
     { key: 'u', header: 'Unfinished modules', render: (j) => j.modules.filter((m) => !done(m.state)).length },
     { key: 'r', header: 'Review', render: (j) => (j.review ? REVIEW[j.review] : 'Needs review') },
@@ -113,7 +114,7 @@ function Jobs({ onChanged }: { onChanged: () => void }) {
   const cols: Column<AdminJob>[] = [
     { key: 'j', header: 'Job', render: (j) => <><span className="mono">{j.id}</span>{j.resume_of && <><br /><span className="muted">resumes {j.resume_of}</span></>}</> },
     { key: 'a', header: 'Assessment · target', render: (j) => <><Link to={`/assessments/${j.assessment_id}`}>{j.assessment_name}</Link><br /><span className="mono muted">{j.target}</span></> },
-    { key: 'o', header: 'Owner', render: (j) => ownerName(j.owner) },
+    { key: 'o', header: 'Owner', render: (j) => j.owner },
     { key: 'r', header: 'Run', render: run },
     { key: 'p', header: 'Priority', render: (j) => (j.state === 'queued'
       ? <button type="button" className="link-btn" aria-label={`Change priority of ${j.id}`} onClick={() => { act.clear(); setPri(j); }}>{j.priority}</button> : j.priority) },
@@ -156,5 +157,24 @@ function PriorityModal({ job, onClose, onDone }: { job: AdminJob; onClose: () =>
       <Textarea id="pri-reason" label="Reason" required hint="Recorded in the audit log." value={reason} onChange={(e) => setReason(e.target.value)} />
       {act.failure && <Banner tone="danger" title="Not saved">{act.failure}</Banner>}
     </Modal>
+  );
+}
+
+function AllAssessments() {
+  const load = useLoad<AdminAssessment[]>('/admin/assessments');
+  const cols: Column<AdminAssessment>[] = [
+    { key: 'n', header: 'Assessment', render: (a) => <Link to={`/assessments/${a.id}`}>{a.name}</Link> },
+    { key: 't', header: 'Target', mono: true, render: (a) => a.target },
+    { key: 'o', header: 'Owner', render: (a) => a.owner.name },
+    { key: 'e', header: 'Environment', render: (a) => a.env },
+    { key: 's', header: 'Status', render: (a) => (a.status === 'active' ? 'Active' : <StatusBadge kind="assessment" status={a.status} />) },
+    { key: 'l', header: 'Last scan', render: (a) => (a.last_job ? <><StatusBadge kind="job" status={a.last_job.state} /> {relativeTime(a.last_job.submitted_at)}</> : 'No scans yet') },
+  ];
+  return (
+    <div className="stack">
+      {load.error && !load.data && <LoadError error={load.error} thing="assessments" onRetry={load.reload} />}
+      {!load.data && !load.error && <Loading />}
+      {load.data && <DataTable caption="All assessments" columns={cols} rows={load.data} rowKey={(a) => a.id} empty={{ title: 'No assessments yet' }} />}
+    </div>
   );
 }

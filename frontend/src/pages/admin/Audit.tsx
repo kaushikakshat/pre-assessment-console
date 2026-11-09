@@ -23,7 +23,7 @@ export function Audit() {
     { key: 'out', header: 'Outcome', render: (e) => <OutcomeBadge outcome={e.outcome} /> },
   ];
   const csv = (
-    <a className="btn btn-secondary btn-md" href={`/api/admin/audit.csv${qs ? `?${qs}` : ''}`}>Export CSV ({data?.length ?? 0})</a>
+    <a className="btn btn-secondary btn-md" href={`/api/admin/audit.csv${qs ? `?${qs}` : ''}`}>Export CSV{data ? ` (${data.length})` : ''}</a>
   );
   return (
     <div className="stack-lg">

@@ -122,3 +122,39 @@ it('audit: export link carries the filters and the footer copy is exact', async 
   await user.selectOptions(screen.getByLabelText('Area'), 'job');
   await waitFor(() => expect(screen.getByRole('link', { name: 'Export CSV (1)' }).getAttribute('href')).toBe('/api/admin/audit.csv?area=job'));
 });
+
+it('capacity: after a successful save the form is seeded from the PUT response (Save disabled again)', async () => {
+  const saved = { config: { ...config, limit: 2 }, capacity: { ...capacity, healthy_workers: 3, limit: 2 }, workers: [], history: [] };
+  mockApi({ '/admin/capacity': { config, capacity: { ...capacity, healthy_workers: 3 }, workers: [], history: [] }, 'PUT /admin/capacity': json(200, saved) });
+  const user = userEvent.setup();
+  mount('/admin/capacity');
+  await user.selectOptions(await screen.findByLabelText(/Global concurrency limit/), '2');
+  await user.click(screen.getByRole('button', { name: 'Save configuration' }));
+  const dlg = await screen.findByRole('alertdialog');
+  await user.type(within(dlg).getByLabelText(/Reason/), 'More');
+  await user.click(within(dlg).getByRole('button', { name: 'Save configuration' }));
+  await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+  expect((screen.getByLabelText(/Global concurrency limit/) as HTMLSelectElement).value).toBe('2');
+  expect((screen.getByRole('button', { name: 'Save configuration' }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it('capacity: changing other fields is not blocked when a worker dropped out', async () => {
+  mockApi({ '/admin/capacity': { config: { ...config, limit: 2 }, capacity: { ...capacity, limit: 2, healthy_workers: 1 }, workers: [], history: [] } });
+  const user = userEvent.setup();
+  mount('/admin/capacity');
+  await user.clear(await screen.findByLabelText(/Per-user quota/));
+  await user.type(screen.getByLabelText(/Per-user quota/), '5');
+  await user.click(screen.getByRole('button', { name: 'Save configuration' }));
+  expect(await screen.findByRole('alertdialog')).toBeTruthy();
+});
+
+it('jobs page honours ?tab=all and lists every assessment with a link', async () => {
+  mockApi({
+    '/admin/approvals': [], '/admin/jobs?filter=interrupted': [],
+    '/admin/assessments': [{ id: 'A-0009', name: 'Portal', target: 'https://p.example.com', env: 'UAT', status: 'active', validation_outcome: 'allowed', last_job: { id: 'JOB-1', state: 'completed', submitted_at: '2026-11-09T08:00:00Z' }, open_findings: 0, created_at: '2026-11-09T08:00:00Z', owner: { id: 'U-2', name: 'Bob' } }],
+  });
+  mount('/admin/jobs?tab=all');
+  const link = await screen.findByRole('link', { name: 'Portal' });
+  expect(link.getAttribute('href')).toBe('/assessments/A-0009');
+  expect(screen.getByText('Bob')).toBeTruthy();
+});

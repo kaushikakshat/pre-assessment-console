@@ -3,8 +3,7 @@ import { ApiError } from '../../lib/api';
 import { Icon, useToast } from '../../components';
 import type { AuditArea, AuditEvent, Job } from '../../lib/types';
 
-export type AdminJob = Job & { owner: string | { id: string; name: string }; target: string };
-export const ownerName = (o: AdminJob['owner']) => (typeof o === 'string' ? o : o.name);
+export type AdminJob = Job & { owner: string; target: string };
 
 export const AREAS: Record<AuditArea, string> = {
   auth: 'Sign-in', users: 'Users', assessment: 'Assessment', validation: 'Validation', job: 'Job',

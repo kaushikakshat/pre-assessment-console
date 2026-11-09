@@ -13,7 +13,11 @@ const toForm = (c: Config): Form => ({ limit: String(c.limit), aging_enabled: c.
 const whole = (s: string) => /^\d+$/.test(s.trim()) && Number(s) >= 1;
 
 export function CapacityPage() {
-  const { data, error, reload } = useLoad<Data>('/admin/capacity', () => 10000);
+  const loaded = useLoad<Data>('/admin/capacity', () => 10000);
+  const { error, reload } = loaded;
+  const [override, setOverride] = useState<Data | null>(null); // PUT response, until the next poll replaces it
+  const data = override ?? loaded.data;
+  useEffect(() => { if (loaded.data) setOverride(null); }, [loaded.data]);
   const [form, setForm] = useState<Form | null>(null);
   const [inline, setInline] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -26,14 +30,14 @@ export function CapacityPage() {
   if (error && !data) return <LoadError error={error} thing="capacity settings" onRetry={reload} />;
   if (!data || !form) return <Loading />;
   const { config, capacity: cap, workers } = data;
-  const set = (patch: Partial<Form>) => { setForm({ ...form, ...patch }); setInline(null); };
+  const set = (patch: Partial<Form>) => { setForm({ ...form, ...patch }); setInline(null); save.clear(); };
   const limit = Number(form.limit);
   const changed = JSON.stringify(form) !== JSON.stringify(toForm(config));
   const invalid = !whole(form.queue_cap) || !whole(form.per_user_quota) || (form.aging_enabled && !whole(form.aging_minutes));
   const lowering = cap.active > limit;
 
   const onSave = () => {
-    if (limit > cap.healthy_workers) {
+    if (limit > config.limit && limit > cap.healthy_workers) {
       const n = cap.healthy_workers;
       setInline(`Only ${n} healthy ${n === 1 ? 'worker is' : 'workers are'} available. Enable or provision more workers before raising the limit to ${limit}.`);
       return;
@@ -41,11 +45,12 @@ export function CapacityPage() {
     save.clear(); setConfirming(true);
   };
   const confirm = async (reason: string) => {
-    const ok = await save.run(() => api('/admin/capacity', { method: 'PUT', body: {
+    let fresh: Data | undefined;
+    const ok = await save.run(async () => { fresh = await api<Data>('/admin/capacity', { method: 'PUT', body: {
       limit, aging_enabled: form.aging_enabled, aging_minutes: Number(form.aging_minutes), queue_cap: Number(form.queue_cap), per_user_quota: Number(form.per_user_quota), reason,
-    } }), 'Capacity configuration saved.');
+    } }); }, 'Capacity configuration saved.');
     setConfirming(false);
-    if (ok) { setForm(null); reload(); } else setInline(null); // the server refusal shows inline below the form
+    if (ok && fresh) { setOverride(fresh); setForm(toForm(fresh.config)); } else setInline(null); // the server refusal shows inline below the form
   };
   const doWorker = async (reason: string) => {
     const { w, action } = worker!;

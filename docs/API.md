@@ -93,13 +93,14 @@ MFA (TOTP) is required for every role, one prompt per sign-in.
 ## Admin (role `admin`, else 403)
 | Method & path | Body | Result |
 |---|---|---|
-| GET `/admin/overview` | – | `{capacity, workers: Worker[], approvals_pending: number, interrupted_unreviewed: number, running: (Job & {owner, target})[], recent_audit: AuditEvent[]}` |
+| GET `/admin/overview` | – | `{capacity, workers: Worker[], approvals_pending: number, interrupted_unreviewed: number, running: (Job & {owner: string, target: string})[], recent_audit: AuditEvent[]}` |
 | GET `/admin/users` | – | `User[]` |
 | POST `/admin/users` | `{name, email, role, team}` | 201 `{user: User, temporary_password: string}` (shown once; MFA enrol on first sign-in). 409 email exists |
 | POST `/admin/users/{id}/actions` | `{action: 'change-role'|'deactivate'|'reactivate'|'reset-mfa'|'revoke-sessions', role?, reason}` | `User`. 422 without reason. Cannot deactivate/demote self |
 | GET `/admin/approvals` | – | `{assessment: Assessment, requested_at, own: boolean}[]` |
 | POST `/admin/approvals/{assessment_id}` | `{decision: 'approve'|'refuse', note}` | `Assessment`. approve → status `active`; refuse → `blocked`. Self-approval allowed, audited with `self-approval` flag. Never overrides safety invariants (a target that is `blocked` by invariant is never in this list) |
-| GET `/admin/jobs?filter=active|interrupted|all` | – | `(Job & {owner, target})[]` |
+| GET `/admin/jobs?filter=active|interrupted|all` | – | `(Job & {owner: string /* owner display name */, target: string})[]` |
+| GET `/admin/assessments` | – | `(AssessmentSummary & {owner: {id, name}})[]` — every assessment, for the All assessments tab (opens Administrator view) |
 | POST `/admin/jobs/{id}/cancel` | `{reason}` | `Job` |
 | POST `/admin/jobs/{id}/priority` | `{priority, reason}` | `Job`; queued only, else 409 |
 | POST `/admin/jobs/{id}/review` | `{outcome: 'resume'|'rerun-advised'|'closed', reason}` | `Job`; interrupted only; `resume` creates a new linked job (`resume_of`) with only the unfinished modules |

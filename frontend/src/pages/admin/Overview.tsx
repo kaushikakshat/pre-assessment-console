@@ -4,7 +4,7 @@ import { formatIST } from '../../lib/format';
 import { PROFILE_NAMES } from '../../lib/status';
 import { useLoad } from '../../lib/useLoad';
 import type { AuditEvent, Capacity, Worker } from '../../lib/types';
-import { AREAS, OutcomeBadge, ownerName, type AdminJob } from './common';
+import { AREAS, OutcomeBadge, type AdminJob } from './common';
 
 interface Overview { capacity: Capacity; workers: Worker[]; approvals_pending: number; interrupted_unreviewed: number; running: AdminJob[]; recent_audit: AuditEvent[] }
 
@@ -17,7 +17,7 @@ export function AdminOverview() {
   const running: Column<AdminJob>[] = [
     { key: 'job', header: 'Job', mono: true, render: (j) => j.id },
     { key: 'a', header: 'Assessment · target', render: (j) => <><Link to={`/assessments/${j.assessment_id}`}>{j.assessment_name}</Link><br /><span className="mono muted">{j.target}</span></> },
-    { key: 'o', header: 'Owner', render: (j) => ownerName(j.owner) },
+    { key: 'o', header: 'Owner', render: (j) => j.owner },
     { key: 'run', header: 'Run', render: (j) => (j.profile ? PROFILE_NAMES[j.profile] : 'Individual modules') },
     { key: 'st', header: 'Status', render: (j) => <StatusBadge kind="job" status={j.state} /> },
   ];
