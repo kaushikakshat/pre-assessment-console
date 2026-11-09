@@ -8,7 +8,7 @@ from test_engine import Fake
 ALERT = {"id": "1", "pluginId": "40012", "alert": "XSS", "risk": "High", "confidence": "High", "url": "http://t.test/a?q=1",
          "param": "q", "method": "GET"}
 MSGS = [{"requestHeader": "GET http://t.test/a HTTP/1.1\r\nHost: t.test", "requestBody": ""},
-        {"requestHeader": "POST http://t.test/transfer HTTP/1.1\r\nHost: t.test", "requestBody": "to=bob&amount=5"}]
+        {"requestHeader": "POST http://t.test/transfer HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded", "requestBody": "to=bob&amount=5"}]
 
 
 def replies(**over):
@@ -176,7 +176,7 @@ def test_api_other_engine_error_fails_not_skipped():
 def test_requests_never_hold_credentials():
     msgs = [{"requestHeader": "POST http://t.test/login HTTP/1.1", "requestBody": "user=a&password=p"},
             {"requestHeader": "POST http://t.test/otp/verify HTTP/1.1", "requestBody": "code=123456"},
-            {"requestHeader": "POST http://t.test/api/settings?token=zzz&x=1 HTTP/1.1",
+            {"requestHeader": "POST http://t.test/api/settings?token=zzz&x=1 HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded",
              "requestBody": "name=bob&csrf_token=abc&secret=s&passcode=1&otp=2&note=hi"}]
     f = Fake(replies(**{"/JSON/core/view/messages/": (200, {"messages": msgs})}))
     ctx = mk(f)
@@ -195,4 +195,46 @@ def test_session_cookie_values_masked_in_alert_text():
     r = dast.run(ctx)
     text = " ".join(f"{d.evidence} {d.impact} {d.description} {d.reproduce}" for d in r.findings)
     assert "abc12345" not in text and "[REDACTED]" in text
+    f.shutdown()
+
+
+def test_request_filter_matches_path_segments_not_host_or_substrings():
+    msgs = [{"requestHeader": f"POST http://{u} HTTP/1.1", "requestBody": ""} for u in
+            ("auth.example.test/orders", "t.test/authors", "t.test/login", "t.test/a/Sign-In/x", "t.test/password.php")]
+    f = Fake(replies(**{"/JSON/core/view/messages/": (200, {"messages": msgs})}))
+    ctx = mk(f)
+    crawl.run(ctx)
+    assert [r[1] for r in ctx.run_ctx["requests"][None]] == ["http://auth.example.test/orders", "http://t.test/authors"]
+    f.shutdown()
+
+
+def test_non_urlencoded_body_not_stored():
+    msgs = [{"requestHeader": "POST http://t.test/x HTTP/1.1\r\nContent-Type: application/json", "requestBody": '{"pw":"s"}'}]
+    f = Fake(replies(**{"/JSON/core/view/messages/": (200, {"messages": msgs})}))
+    ctx = mk(f)
+    crawl.run(ctx)
+    assert ctx.run_ctx["requests"][None] == [("POST", "http://t.test/x", "[REDACTED BODY]")]
+    f.shutdown()
+
+
+def test_cleanup_failure_on_success_raises_and_api_clears_headers():
+    import pytest
+    from app.engine.zap import EngineDown
+    f = Fake(replies(**{"/JSON/replacer/view/rules/": (500, {})}))
+    with pytest.raises(EngineDown):
+        crawl.run(mk(f))
+    f.shutdown()
+    f = Fake(replies(**{"/JSON/openapi/action/importUrl/": (400, {"code": "bad_external_data"})}))
+    api.run(mk(f, profile="deep"))
+    p = f.paths()
+    assert p.index(("GET", "/JSON/replacer/view/rules/")) < p.index(("POST", "/JSON/openapi/action/importUrl/"))
+    f.shutdown()
+
+
+def test_only_session_like_cookies_masked():
+    f = Fake(replies())
+    a = {**ALERT, "id": "9", "evidence": "sid=abc12345 theme=dark lang=en", "other": ""}
+    f.replies["/JSON/core/view/alerts/"] = (200, {"alerts": [a]})
+    r = dast.run(mk(f, sessions={"C-0001": "sid=abc12345; theme=dark; lang=en"}))
+    assert "abc12345" not in r.findings[0].evidence and "theme=dark" in r.findings[0].evidence
     f.shutdown()

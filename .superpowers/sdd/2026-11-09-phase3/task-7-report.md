@@ -30,3 +30,10 @@ Suite: 265 passed (6 new in test_modules_engine.py).
 7. clear_quiet(): cleanup failure logs a WARNING (no values) and never replaces the original exception. Test.
 8. docker-compose zap: `-notel -config start.checkForUpdates=false -config start.checkAddonUpdates=false` (the plan's `start.addonUpdates` key is not a real option: CheckAddonUpdates stayed true; `start.checkAddonUpdates` verified live via autoupdate/view: CheckOnStart false, CheckAddonUpdates false). 
    NOT FULLY RESOLVED: telemetry (tel.zaproxy.org) no longer appears, but a call to cfu.zaproxy.org:443 still shows in recent_refused about 2 min after ZAP starts (thread ZAP-cfu, ExtensionCallHome via ExtensionAutoUpdate, seen during the live active scan; idle and spider-only runs showed none earlier in the same ZAP's life). The guard refuses it ("host out of scope"), so it is harmless but noisy. Live after fix: pages 3, alerts 20, recent_refused only cfu.zaproxy.org:443, none for testtarget:80.
+
+## Fix round 2
+Suite: 269 passed (4 new tests).
+1. Request filter now matches only urlsplit(url).path, anchored on segments `(^|/)(log-?in|log-?out|sign-?in|sign-?out|auth|otp|password)(/|$|\.)`, plus exact run exclusions. auth.example.test/orders and /authors kept; /login, /a/Sign-In/x, /password.php dropped.
+2. clear_quiet swallows a cleanup failure only while an exception is propagating; on success it raises (module ends unavailable/failed). api.run calls as_account(zap, None) before importing. Tests added.
+3. Cookie masking limited to cookies whose name looks session-bearing or whose value is >= 16 chars; theme/lang style cookies stay readable.
+4. Only application/x-www-form-urlencoded bodies are parsed and field-masked; any other body is stored as "[REDACTED BODY]".

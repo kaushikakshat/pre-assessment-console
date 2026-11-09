@@ -1,5 +1,6 @@
 """Active testing with the guarded ZAP engine, once per account context (policy pa-safe in Pre-Assessment, pa-deep in Deep)."""
 import math
+import re
 import time
 
 from app.engine import zap as _zap
@@ -8,12 +9,14 @@ from .base import ModuleResult
 from .crawl import accounts, as_account, clear_quiet, context, harvest
 
 R = "[REDACTED]"
+SESSIONISH = re.compile(r"(?i)sess|sid|auth|token|jwt|connect\.sid|phpsessid|jsessionid|asp\.net")
 
 
 def emit(ctx) -> list:
     """Drafts for every harvested alert not yet reported; session cookie values are masked first."""
     rc, out = ctx.run_ctx, []
-    secrets = {v.strip().partition("=")[2] for c in (rc.get("sessions") or {}).values() for v in c.split(";")}
+    pairs = (v.strip().partition("=") for c in (rc.get("sessions") or {}).values() for v in c.split(";"))
+    secrets = {val for name, _, val in pairs if SESSIONISH.search(name) or len(val) >= 16}  # not short preference cookies
     secrets = sorted((x for x in secrets if len(x) >= 4), key=len, reverse=True)
     for key, (cred, a) in rc.get("alerts", {}).items():
         if key in rc.setdefault("seen_alerts", set()):

@@ -5,7 +5,7 @@ from urllib.parse import urljoin, urlsplit
 from app.engine import zap as _zap
 
 from .base import ModuleResult
-from .crawl import context, harvest
+from .crawl import as_account, context, harvest
 from .dast import emit
 
 NOT_A_SPEC = {"bad_external_data", "url_not_found", "no_implementor"}  # ZAP: fetch failed or not an API description
@@ -29,6 +29,7 @@ def run(ctx) -> ModuleResult:
     m = re.search(r"(?im)^\s*openapi:\s*(\S+)", rc.get("notes") or "")
     # shortcut: an explicit description outside the target is ignored (not an error); the common paths are then tried
     cands = [m.group(1)] if m and _in_scope(ctx, m.group(1)) else [urljoin(ctx.url, p) for p in COMMON]
+    as_account(zap, None)  # unauthenticated: no Cookie left over from an earlier module
     cid, found = context(ctx, None), None
     for url in cands:
         try:

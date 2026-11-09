@@ -3,6 +3,7 @@ run_ctx contract (shared with the access module): sessions {credential display i
 the login step; this module writes pages {id|None: set of URLs} and requests {id|None: [(method, url, form dict)]}."""
 import logging
 import re
+import sys
 import time
 from urllib.parse import parse_qsl, urlsplit
 
@@ -11,7 +12,7 @@ from app.engine import zap as _zap  # module import: zap imports modules.base, s
 from .base import ModuleResult
 
 log = logging.getLogger("worker")
-SENSITIVE_URL = re.compile(r"(?i)log(in|out)|sign-?in|auth|otp|password")
+SENSITIVE_PATH = re.compile(r"(?i)(^|/)(log-?in|log-?out|sign-?in|sign-?out|auth|otp|password)(/|$|\.)")
 SECRET_FIELD = re.compile(r"(?i)pass|token|otp|csrf|secret|code")
 _QS_SECRET = re.compile(r"(?i)([?&;][^=&#]*(?:pass|token|otp|csrf|secret|code)[^=&#]*=)[^&#]*")
 
@@ -37,10 +38,14 @@ def as_account(zap, cookie):
 
 
 def clear_quiet(zap):
-    """For finally blocks: a failed cleanup must not replace the error being raised (no values in the log)."""
+    """For finally blocks. While an error is propagating a failed cleanup is only logged (no values) so it cannot
+    replace that error; on the success path it raises, so a leftover Cookie never reaches the next module."""
+    failing = sys.exc_info()[0] is not None
     try:
         zap.clear_headers()
     except Exception:
+        if not failing:
+            raise
         log.warning("could not clear the scan engine's injected headers")
 
 
@@ -58,10 +63,10 @@ def harvest(ctx, cred):
 
 def safe_request(rc, method, url, form):
     """Replay data for the access checks must never hold credentials: drop login/OTP requests, mask secret fields."""
-    if SENSITIVE_URL.search(url) or any(re.fullmatch(x, url) for x in rc.get("exclude", [])):
+    if SENSITIVE_PATH.search(urlsplit(url).path) or any(re.fullmatch(x, url) for x in rc.get("exclude", [])):
         return None
-    return (method, _QS_SECRET.sub(lambda m: m.group(1) + "[REDACTED]", url),
-            {k: "[REDACTED]" if SECRET_FIELD.search(k) else v for k, v in form.items()})
+    form = "[REDACTED BODY]" if isinstance(form, str) else {k: "[REDACTED]" if SECRET_FIELD.search(k) else v for k, v in form.items()}
+    return method, _QS_SECRET.sub(lambda m: m.group(1) + "[REDACTED]", url), form
 
 
 def run(ctx) -> ModuleResult:
@@ -81,7 +86,10 @@ def run(ctx) -> ModuleResult:
             for m in zap.messages(ctx.url, before):
                 line = (m.get("requestHeader") or "").split("\r\n", 1)[0].split(" ")
                 if len(line) >= 2 and line[0].upper() != "GET":
-                    r = safe_request(rc, line[0].upper(), line[1], dict(parse_qsl(m.get("requestBody") or "")))
+                    body, hdr = m.get("requestBody") or "", (m.get("requestHeader") or "").lower()
+                    # only urlencoded bodies are parsed; any other body type could hold secrets in unknown shapes
+                    form = dict(parse_qsl(body)) if not body or "application/x-www-form-urlencoded" in hdr else "[REDACTED BODY]"
+                    r = safe_request(rc, line[0].upper(), line[1], form)
                     if r:
                         reqs[cred].append(r)
             harvest(ctx, cred)  # passive alerts raised while crawling as this account
