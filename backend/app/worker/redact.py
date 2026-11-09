@@ -3,7 +3,7 @@ import re
 
 R = "[REDACTED]"
 _HEADER = re.compile(r"(?im)^((?:cookie|set-cookie|authorization|proxy-authorization)\s*:\s*).*$")
-_USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^\s/@:]+:[^\s/@]*@")
+_USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^\s/@:]+(?::[^\s/@]*)?@")
 _BEARER = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
 _JWT = re.compile(r"\beyJ[\w-]+\.[\w-]+\.[\w-]*")
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")

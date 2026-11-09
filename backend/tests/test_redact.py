@@ -26,3 +26,9 @@ def test_build_evidence_limits_and_selects():
 def test_redacts_url_userinfo():
     out = redact("see https://admin:s3cret@db.example.com/x and ftp://u:p@h/")
     assert "s3cret" not in out and "admin" not in out and "https://" + R + "@db.example.com/x" in out
+
+
+def test_redacts_token_only_userinfo():
+    out = redact("clone https://ghp_abc123@github.com/o/r and https://u:p@h/ and https://h.example/a@b")
+    assert "ghp_abc123" not in out and "u:p" not in out and "https://" + R + "@github.com/o/r" in out
+    assert "https://h.example/a@b" in out

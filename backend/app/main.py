@@ -4,7 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from app.api import admin_users, assessments, auth, catalog, dashboard, findings, jobs
+from app.api import admin, admin_users, assessments, auth, catalog, dashboard, findings, jobs
 
 app = FastAPI(title="Pre-Assessment Platform", docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -42,6 +42,7 @@ def health():
 
 
 app.include_router(auth.router, prefix="/api")
+app.include_router(admin.router, prefix="/api")
 app.include_router(admin_users.router, prefix="/api")
 app.include_router(assessments.router, prefix="/api")
 app.include_router(catalog.router, prefix="/api")

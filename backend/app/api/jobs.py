@@ -120,9 +120,8 @@ def get_one(jid: str, user=Depends(sec.current_user), db=Depends(get_db)):
     return shape(db, get_job_or_404(db, jid, user, "view"))
 
 
-@router.post("/jobs/{jid}/cancel")
-def cancel(jid: str, user=Depends(sec.current_user), db=Depends(get_db)):
-    j = get_job_or_404(db, jid, user, "cancel_own_job", lock=True)  # row lock: a concurrent claim either wins or is skipped
+def apply_cancel(db, j: Job, actor: str, extra: str = ""):
+    """Caller holds the job row lock. queued -> cancelled; running -> cancelling; finished -> 409."""
     if j.state == "queued":
         j.state, j.ended_at, j.cancel_requested = "cancelled", func.now(), True
         db.execute(update(ModuleRun).where(ModuleRun.job_id == j.id, ModuleRun.state == "queued")
@@ -131,9 +130,15 @@ def cancel(jid: str, user=Depends(sec.current_user), db=Depends(get_db)):
         j.state, j.cancel_requested = "cancelling", True
     elif j.state != "cancelling":
         raise HTTPException(409, "This scan has already finished.")
-    record(db, user.email, "job", "cancel", j.display_id, "success", f"Cancel requested; job is now {j.state}")
+    record(db, actor, "job", "cancel", j.display_id, "success", f"Cancel requested; job is now {j.state}{extra}")
     db.commit()
     db.refresh(j)
+
+
+@router.post("/jobs/{jid}/cancel")
+def cancel(jid: str, user=Depends(sec.current_user), db=Depends(get_db)):
+    j = get_job_or_404(db, jid, user, "cancel_own_job", lock=True)  # row lock: a concurrent claim either wins or is skipped
+    apply_cancel(db, j, user.email)
     return shape(db, j)
 
 
