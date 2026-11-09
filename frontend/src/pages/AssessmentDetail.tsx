@@ -136,7 +136,7 @@ export function AssessmentDetail() {
 
       {finding && (
         <FindingDrawer key={finding} id={finding} access={level} ownerName={as.owner.name} moduleName={moduleName} onClose={closeDrawer} onChanged={reloadFindings}
-          onRetest={level === 'owner' && as.status === 'active' ? (f) => setRetest([f]) : undefined} />
+          onRetest={level === 'owner' ? (f) => setRetest([f]) : undefined} retestBlocked={as.status === 'active' ? undefined : 'Retest needs an active assessment.'} />
       )}
       {generating && <GenerateDialog assessmentId={as.id} jobs={jobs.data ?? []} onClose={() => setGenerating(false)} onDone={() => { setGenerating(false); toast('Report queued.'); reports.reload(); }} />}
       {retest && (
@@ -228,6 +228,7 @@ function Findings({ rows, moduleName, sel, setSel, onRetest, canRetest }: {
         <Select id="f-conf" label="Confidence" value={f.confidence} onChange={pick('confidence')}><option value="">All</option>{CONFIDENCES.map((c) => <option key={c} value={c}>{CONFIDENCE[c].label}</option>)}</Select>
         <Checkbox checked={group} onChange={(e) => setGroup(e.target.checked)} label="Group by module" />
         {sel && <Button variant="primary" disabled={!canRetest || sel.size === 0} onClick={onRetest}>{`Request retest (${sel.size})`}</Button>}
+        {sel && !canRetest && <small className="muted">Retest needs an active assessment.</small>}
       </div>
       {shown.length === 0 ? (
         <Card><EmptyState title={filtered ? 'No findings match these filters' : 'No findings yet'}
@@ -321,15 +322,15 @@ function Reports({ as, data, jobs, level }: { as: Assessment; data: ReturnType<t
     { key: 'st', header: 'Status', render: (r) => <StatusBadge kind="report" status={r.state} /> },
     { key: 'act', header: 'Actions', render: (r) => (
       <span className="filters">
-        {r.state === 'ready' && <Link to={`/reports/${r.id}`}>Preview</Link>}
-        {r.state === 'ready' && can(level, 'export-report') && <a download href={`/api/reports/${r.id}/pdf`}>Export PDF</a>}
-        {r.state === 'failed' && can(level, 'generate-report') && <Button size="sm" busy={retrying === r.id} onClick={() => retry(r)}>Retry</Button>}
+        {r.state === 'ready' && <Link to={`/reports/${r.id}`}>Preview<span className="sr-only"> {r.id}</span></Link>}
+        {r.state === 'ready' && can(level, 'export-report') && <a download href={`/api/reports/${r.id}/pdf`}><span>Export PDF</span><span className="sr-only"> {r.id}</span></a>}
+        {r.state === 'failed' && can(level, 'generate-report') && <Button size="sm" busy={retrying === r.id} onClick={() => retry(r)}>Retry<span className="sr-only"> {r.id}</span></Button>}
       </span>
     ) },
   ];
   return (
     <>
-      {data.data.some((r) => r.state === 'failed') && <Banner tone="danger" title="Report generation failed — your assessment results are unchanged">Retry re-renders the report from the stored results. It does not run the scan again.</Banner>}
+      {data.data.some((r) => r.state === 'failed') && <Banner tone="danger" title="Report generation failed — your assessment results are unchanged">{data.data.filter((r) => r.state === 'failed').map((r) => r.id).join(', ')}: retry re-renders the report from the stored results. It does not run the scan again.</Banner>}
       <DataTable caption="Reports" columns={cols} rows={data.data} rowKey={(r) => r.id}
         empty={{ title: 'No reports yet', text: jobs.some((j) => FINISHED.includes(j.state)) ? `Use Generate report to create one for ${as.name}.` : 'Reports can be generated after a scan finishes.' }} />
     </>

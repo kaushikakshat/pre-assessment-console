@@ -70,7 +70,7 @@ export interface Location {
 }
 export interface Finding {
   id: string; assessment_id: string; job_id: string; severity: Severity; confidence: Confidence; state: FindingState;
-  module: ModuleKey; title: string; asset: string; first_seen_at: string; last_seen_at: string;
+  module: ModuleKey; credential_id?: string | null; title: string; asset: string; first_seen_at: string; last_seen_at: string;
 }
 export interface HistoryLine { at: string; by: string; text: string }
 export interface FindingDetail extends Finding {
@@ -106,7 +106,13 @@ export interface Wordlist { key: string; category: 'discovery' | 'fuzzing'; labe
 export type ReportType = 'management' | 'technical';
 export type ReportState = 'generating' | 'ready' | 'failed';
 // Contract from backend Task 11 (docs/API.md not yet extended).
-export interface Report { id: string; assessment_id: string; job_id: string; type: ReportType; version: number; state: ReportState; created_at: string; requested_by: string }
+export interface Report { id: string; assessment_id: string; job_id: string; type: ReportType; version: number; state: ReportState; created_at: string; requested_by: string; error?: string | null }
+export interface ReportOverviewRow { n: number; id: string; severity: Severity; title: string; location: string; confidence: Confidence; state: FindingState }
+export interface ReportDetail {
+  id: string; severity: Severity; confidence: Confidence; state: FindingState; title: string; location: Location; description: string; impact: string;
+  evidence: string; reproduce: string; remediation: string; references: string[]; history: HistoryLine[];
+}
+export interface ReportSummary { by_severity: Record<Severity, number>; total: number; still_open: number }
 export interface ReportModel {
   header?: { product: string; classification: string };
   title?: { assessment: string; type: string; report_id: string; version: number; generated_at: string; by: string };
@@ -114,8 +120,8 @@ export interface ReportModel {
   scope?: Record<string, unknown>;
   categories?: { key: string; label: string; count: number }[];
   modules?: { key: string; name: string; state: string; detail: string | null; untested?: number }[];
-  summary?: unknown;
-  findings_overview?: Record<string, unknown>[];
-  details?: Record<string, unknown>[];
+  summary?: ReportSummary;
+  findings_overview?: ReportOverviewRow[];
+  details?: ReportDetail[];
   limitations?: string;
 }

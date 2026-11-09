@@ -19,8 +19,8 @@ export const ACTIONS: { action: StateAction; label: string; from: FindingState[]
   { action: 'reopen', label: 'Reopen', from: ['false-positive', 'accepted-risk', 'resolved'], reason: true },
 ];
 
-export function FindingDrawer({ id, access, ownerName, moduleName, onClose, onChanged, onRetest }: {
-  onRetest?: (f: FindingDetail) => void; id: string; access: AccessLevel; ownerName: string; moduleName: (k: string) => string; onClose: () => void; onChanged: () => void;
+export function FindingDrawer({ id, access, ownerName, moduleName, onClose, onChanged, onRetest, retestBlocked }: {
+  onRetest?: (f: FindingDetail) => void; retestBlocked?: string; id: string; access: AccessLevel; ownerName: string; moduleName: (k: string) => string; onClose: () => void; onChanged: () => void;
 }) {
   const { data, error, reload } = useLoad<FindingDetail>(`/findings/${id}`);
   const [pending, setPending] = useState<(typeof ACTIONS)[number] | null>(null);
@@ -52,7 +52,8 @@ export function FindingDrawer({ id, access, ownerName, moduleName, onClose, onCh
       footer={d && (can(access, 'change-finding-state')
         ? <>
           {ACTIONS.filter((a) => a.from.includes(d.state)).map((a) => <Button key={a.action} onClick={() => setPending(a)}>{a.label}</Button>)}
-          {onRetest && retestable(d) && <Button variant="primary" onClick={() => onRetest(d)}>Request retest</Button>}
+          {onRetest && retestable(d) && <Button variant="primary" disabled={!!retestBlocked} onClick={() => onRetest(d)}>Request retest</Button>}
+          {onRetest && retestable(d) && retestBlocked && <small className="muted">{retestBlocked}</small>}
         </>
         : <span className="muted">{`Administrator view. Only the owner, ${ownerName}, can change this finding.`}</span>)}
     >

@@ -35,6 +35,8 @@ const mount = (path: string) => render(<MemoryRouter initialEntries={[path]}><Au
 
 afterEach(() => vi.restoreAllMocks());
 
+const WATERMARK = 'PRE-ASSESSMENT RESULTS — not a penetration test, statutory certificate or security clearance. Results are not exhaustive and may include false positives.';
+
 test('test_retest_confirm_disabled_until_checked', async () => {
   mockApi(base);
   mount('/assessments/A-0001?tab=findings');
@@ -75,10 +77,10 @@ test('test_report_failed_shows_banner_and_retry', async () => {
   const u = userEvent.setup();
   await u.click(await screen.findByRole('tab', { name: /Reports/ }));
   expect(await screen.findByText(/Report generation failed — your assessment results are unchanged/)).toBeTruthy();
-  const pdf = screen.getByRole('link', { name: 'Export PDF' });
+  const pdf = screen.getByRole('link', { name: /^Export PDF/ });
   expect(pdf.getAttribute('href')).toBe('/api/reports/R-0002/pdf');
   expect(pdf.hasAttribute('download')).toBe(true);
-  await u.click(screen.getByRole('button', { name: 'Retry' }));
+  await u.click(screen.getByRole('button', { name: /^Retry/ }));
   await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/reports/R-0001/retry', expect.objectContaining({ method: 'POST' })));
 });
 
@@ -87,12 +89,32 @@ test('test_preview_shows_all_seven_categories_and_watermark', async () => {
   mockApi({ '/reports/R-0002': { ...report('R-0002', 'ready'), model: {
     header: { product: 'Pre-Assessment Platform', classification: 'TBD · OD-8' },
     title: { assessment: 'Shop', type: 'Management summary', report_id: 'R-0002', version: 1, generated_at: 'x', by: 'Asha Rao' },
-    watermark: 'PRE-ASSESSMENT RESULTS — not a penetration test, statutory certificate or security clearance.',
+    watermark: WATERMARK,
     categories: labels.map((l, i) => ({ key: l, label: l, count: i })), modules: [], findings_overview: [], limitations: 'None.',
   } } });
   mount('/reports/R-0002');
   const table = await screen.findByRole('table', { name: 'Result categories' });
   for (const l of labels) expect(within(table).getByText(l)).toBeTruthy();
-  expect(screen.getByRole('note').textContent).toContain('PRE-ASSESSMENT RESULTS');
-  expect(screen.getByRole('link', { name: 'Export PDF' })).toBeTruthy();
+  expect(screen.getByRole('note').textContent).toBe(WATERMARK);
+  expect(screen.getByRole('link', { name: /^Export PDF/ })).toBeTruthy();
+});
+
+test('test_technical_preview_renders_summary_and_details_without_raw_json', async () => {
+  const loc = { url: 'https://shop.example.com/admin', host: 'shop.example.com', port: '443', path: '/admin', param: null, method: 'GET', component: null, kind: 'Web page' };
+  mockApi({ '/reports/R-0003': { ...report('R-0003', 'ready'), type: 'technical', model: {
+    watermark: WATERMARK,
+    summary: { by_severity: { critical: 0, high: 3, medium: 2, low: 1, info: 0 }, total: 6, still_open: 4 },
+    findings_overview: [{ n: 1, id: 'F-1', severity: 'high', title: 'Admin exposed', location: '/admin', confidence: 'confirmed', state: 'open' }],
+    details: [{ id: 'F-1', severity: 'high', confidence: 'confirmed', state: 'open', title: 'Admin exposed', location: loc, description: 'Desc text', impact: 'Impact text',
+      evidence: 'Authorization: [redacted]', reproduce: 'Open it', remediation: 'Restrict it', references: ['https://owasp.org/x'], history: [{ at: '2026-11-09T08:00:00Z', by: 'system', text: 'Found in JOB-1' }] }],
+  } } });
+  const { container } = mount('/reports/R-0003');
+  const sum = (await screen.findByText('6 total')).closest('section')!;
+  expect(sum.textContent).toMatch(/High\s*3/);
+  expect(sum.textContent).toContain('4 still open');
+  expect(screen.getAllByText('/admin').length).toBeGreaterThan(0);
+  expect(screen.getByText('Authorization: [redacted]')).toBeTruthy();
+  expect(screen.getByText('Found in JOB-1')).toBeTruthy();
+  expect(screen.getByRole('link', { name: 'https://owasp.org/x' })).toBeTruthy();
+  expect(container.textContent).not.toContain('{');
 });

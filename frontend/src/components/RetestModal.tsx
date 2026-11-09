@@ -21,7 +21,11 @@ export function RetestModal({ assessmentId, target, findings, moduleName, blocke
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [key] = useState(uuid); // a retry returns the same job
-  const modules = [...new Set(['reach', ...findings.map((f) => f.module)])];
+  // Mirrors the backend rule: reach + the findings' modules, crawl for engine findings, auth for credentialed ones.
+  const hasCred = findings.some((f) => f.credential_id);
+  const known = findings.every((f) => 'credential_id' in f);
+  const engine = findings.some((f) => ['crawl', 'dast', 'api'].includes(f.module));
+  const modules = [...new Set(['reach', ...findings.map((f) => f.module), ...(engine ? ['crawl'] : []), ...(hasCred ? ['auth'] : [])])];
   const n = findings.length;
 
   const submit = async () => {
@@ -42,7 +46,7 @@ export function RetestModal({ assessmentId, target, findings, moduleName, blocke
           { key: 't', header: 'Finding', render: (f) => <>{f.title}<br /><small className="muted mono">{f.id}</small></> },
           { key: 'st', header: 'State', render: (f) => <StatusBadge kind="finding" status={f.state} /> },
         ]} />
-      <p>Modules to run</p>
+      <p>{known ? 'Modules to run' : 'Includes at least'}</p>
       <p className="chips">{modules.map((m) => <span key={m} className="chip">{moduleName(m)}</span>)}</p>
       <p>Scope: <span className="mono">{target}</span></p>
       <p className="muted">Other findings from these modules that the retest does not observe will be marked &lsquo;Not retested&rsquo;.</p>
