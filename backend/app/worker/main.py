@@ -115,6 +115,20 @@ def _cert_failure(e) -> bool:
     return False
 
 
+def untrusted_cert(args) -> bool:
+    """ZAP ignores certificate errors, so honour the owner's decision here: one verifying probe before the engine opens."""
+    if args["scheme"] != "https" or not args["verify"]:
+        return False
+    c = SafeClient({args["host"]}, args["internal_hosts"], max_requests=1, resolver=args["resolver"], verify=True)
+    try:
+        c.get(args["url"])
+    except Exception as e:  # any non-certificate failure is left to the modules to report
+        return _cert_failure(e)
+    finally:
+        c.close()
+    return False
+
+
 def execute_module(key, ctx_args, timeout, stage_deadline=None, run_ctx=None):
     """-> (state, detail, findings, tool_version, untested). Never raises; every failure is plain and never 'completed'.
     stage_deadline (absolute monotonic) caps the module's own timeout; run_ctx is shared across the job's modules."""
@@ -189,7 +203,7 @@ def run_job(job_id, worker, halt, resolver=socket.getaddrinfo):
         args["internal"] = internal
         args["internal_hosts"] = {} if internal is False else {p.host: internal}
         keys = list(db.scalars(select(ModuleRun.key).where(ModuleRun.job_id == job_id).order_by(ModuleRun.id)))
-        states, run_ctx, engine_down = [], {"profile": job.profile, "notes": a.notes or "", "wordlists": list(job.wordlists or [])}, False
+        states, run_ctx, engine_down, bad_cert = [], {"profile": job.profile, "notes": a.notes or "", "wordlists": list(job.wordlists or [])}, False, False
         if "auth" in keys:
             load_accounts(db, a, run_ctx)
         limits = db.scalar(select(SchedulerConfig.profile_limits).where(SchedulerConfig.id == 1)) or {}
@@ -208,7 +222,9 @@ def run_job(job_id, worker, halt, resolver=socket.getaddrinfo):
             if why:
                 return _end(db, job, worker, why, why, "Cancelled before it started" if why == "cancelled"
                             else "The assessment is no longer approved for scanning")
-            if key in ENGINE_MODULES and key in MODULES and not engine_down and "session" not in run_ctx:
+            if key in ENGINE_MODULES and key in MODULES and not engine_down and not bad_cert and "session" not in run_ctx:
+                bad_cert = untrusted_cert(args)
+            if key in ENGINE_MODULES and key in MODULES and not engine_down and not bad_cert and "session" not in run_ctx:
                 try:
                     s = stack.enter_context(stages.EngineSession(job, a, scope, ttl_s=(budget_s * 60 if budget_s else 3600) + 120))
                     run_ctx.update(session=s, zap=s.zap, exclude=s.exclude)
@@ -216,6 +232,8 @@ def run_job(job_id, worker, halt, resolver=socket.getaddrinfo):
                     engine_down = True
             if key not in MODULES:
                 state, detail, found, tool, untested = "unavailable", "Not available in this release", [], None, 0
+            elif key in ENGINE_MODULES and bad_cert:
+                state, detail, found, tool, untested = "failed", UNTRUSTED_CERT, [], None, 0
             elif key in ENGINE_MODULES and engine_down:
                 state, detail, found, tool, untested = "unavailable", ENGINE_DOWN, [], None, 0
             else:

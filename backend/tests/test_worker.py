@@ -194,3 +194,35 @@ def test_lease_heartbeat_updates_engine_ok(monkeypatch):
     wm.run_with_lease(None, name, threading.Event())  # job_id None: only the worker row is touched
     with engine.connect() as c:
         assert c.execute(text("SELECT engine_ok FROM workers WHERE name=:n"), {"n": name}).scalar() is False
+
+
+@pytest.mark.parametrize("allow", [False, True])
+def test_engine_modules_honour_untrusted_cert_decision(setup, monkeypatch, allow):
+    import ssl
+    w, aid, uid, fakes = setup
+    opened = []
+
+    class Probe:
+        def __init__(self, *a, **kw): pass
+        def get(self, url, **kw): raise ssl.SSLCertVerificationError("self-signed")
+        def close(self): pass
+
+    class Session:
+        zap, exclude = None, []
+        def __init__(self, *a, **kw): opened.append(1)
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    fakes["crawl"] = lambda ctx: ModuleResult("completed", "ok")
+    monkeypatch.setattr(wm, "SafeClient", Probe)
+    monkeypatch.setattr(wm.stages, "EngineSession", Session)
+    with engine.begin() as c:
+        c.execute(text("UPDATE assessments SET allow_untrusted_cert=:v WHERE id=:i"), {"v": allow, "i": aid})
+    jid = add_job(aid, uid, modules=("reach", "crawl"))
+    claim(w)
+    run(jid, w)
+    state, mods = snapshot(jid)
+    if allow:  # the probe is skipped and the engine opens
+        assert mods["crawl"][0] == "completed" and opened
+    else:
+        assert mods["crawl"] == ("failed", wm.UNTRUSTED_CERT) and not opened and state == "completed-warnings"
