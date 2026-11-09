@@ -26,6 +26,9 @@ class Portal(http.server.BaseHTTPRequestHandler):
         sid = self.headers.get("Cookie", "")
         if self.path == "/admin/panel":  # admin only; others get the login page
             return self._send(200, "Admin panel. Users, billing and secrets live here." if "sid=admin" in sid else "Please sign in")
+        if self.path == "/shell":  # one shell for everyone; non-admins also get a denial line
+            return self._send(200, "Reports shell with a long navigation menu and plenty of words " * 6
+                              + ("" if "sid=admin" in sid else "You have no permission to view this"))
         if self.path in ("/leaky", "/shared", "/user/delete/5"):
             return self._send(200, f"Page {self.path} with plenty of shared words for the similarity measure to compare. Welcome alice and boss")
         if self.path == "/login":
@@ -38,12 +41,12 @@ class Portal(http.server.BaseHTTPRequestHandler):
         self._send(404)
 
     def do_POST(self):
-        if self.path in ("/admin/lax", "/admin/strict"):
+        if self.path in ("/admin/lax", "/admin/strict", "/admin/csrf"):
             self.rfile.read(int(self.headers["Content-Length"]))
             self.hits.append("POST " + self.path)
             if self.path == "/admin/strict" and "sid=admin" not in self.headers.get("Cookie", ""):
                 return self._send(403, "Forbidden")
-            return self._send(200, "Done")
+            return self._send(200, "Invalid CSRF token" if self.path == "/admin/csrf" else "Done")
         f = {k: v[0] for k, v in parse_qs(self.rfile.read(int(self.headers["Content-Length"])).decode()).items()}
         self.seen.append({**f, "_path": self.path})
         if f.get("csrf") != CSRF:

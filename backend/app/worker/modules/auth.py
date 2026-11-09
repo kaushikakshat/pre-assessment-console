@@ -20,21 +20,25 @@ def open_accounts(rc) -> list:
 def secrets(rc) -> set:
     """Plaintext values to scrub from anything stored. Local use only."""
     try:
-        return {v for _, _, u, p in open_accounts(rc) for v in (u, p) if len(v) >= 3}
+        return {v for _, _, u, p in open_accounts(rc) for v in (u, p) if v}
     except Exception:
         return set()
 
 
-def login_all(ctx, deadline) -> tuple[dict, list]:
-    """-> (sessions, ["{role} could not sign in: {reason}"]). Reasons come from the login engine and hold no values."""
-    rc, sessions, failed = ctx.run_ctx, {}, []
+def login_all(ctx, deadline, ids=None, attempts=ATTEMPTS) -> tuple[dict, list, set]:
+    """-> (sessions, ["{role} could not sign in: {reason}"], ids that failed). Skips accounts in run_ctx['excluded'].
+    Reasons come from the login engine and hold no values."""
+    rc, sessions, failed, bad = ctx.run_ctx, {}, [], set()
     s = rc["login"]
     code = crypto.open_sealed(s["bypass_code_enc"]) if s.get("bypass_code_enc") else None
     setup = LoginSetup(**{k: v for k, v in s.items() if k != "bypass_code_enc"}, bypass_code=code)
     roles = {i: role for i, role, *_ in rc["accounts"]}
+    skip = rc.get("excluded", set())
     for cid, user, pw in _each(rc):
+        if cid in skip or (ids is not None and cid not in ids):
+            continue
         why = "The credentials could not be read" if user is None else ""
-        for _ in range(ATTEMPTS if user is not None else 0):
+        for _ in range(attempts if user is not None else 0):
             res = perform_login(ctx.client, setup, user, pw, deadline)
             if res.ok:
                 sessions[cid], why = "; ".join(f"{k}={v}" for k, v in res.cookies.items()), ""
@@ -44,7 +48,26 @@ def login_all(ctx, deadline) -> tuple[dict, list]:
                 break
         if why:
             failed.append(f"{roles[cid]} could not sign in: {why}")
-    return sessions, failed
+            bad.add(cid)
+            if "locked" in why:
+                skip.add(cid)
+    rc["excluded"] = skip
+    return sessions, failed, bad
+
+
+def relogin(ctx, cid) -> bool:
+    """One fresh sign-in for an account whose session was lost; the third failure (or a lockout) excludes it."""
+    rc = ctx.run_ctx
+    got, _, bad = login_all(ctx, ctx.deadline, ids={cid}, attempts=1)
+    if cid in got:
+        rc.setdefault("sessions", {})[cid] = got[cid]
+        return True
+    rc.setdefault("sessions", {}).pop(cid, None)
+    n = rc.setdefault("relogin_failures", {})
+    n[cid] = n.get(cid, 0) + 1
+    if n[cid] >= ATTEMPTS:
+        rc.setdefault("excluded", set()).add(cid)
+    return False
 
 
 def _each(rc):
@@ -61,8 +84,9 @@ def run(ctx) -> ModuleResult:
         return ModuleResult("skipped", "No test accounts were configured")
     rc["roles"] = {i: role for i, role, *_ in rc["accounts"]}
     rc["logged_out"] = rc["login"].get("logged_out_indicator")
-    sessions, failed = login_all(ctx, ctx.deadline)
+    sessions, failed, bad = login_all(ctx, ctx.deadline)
     rc["sessions"] = sessions
+    rc["excluded"] = rc.get("excluded", set()) | bad
     if failed:
         return ModuleResult("completed-warnings", "; ".join(failed))
     return ModuleResult("completed", f"Signed in {len(sessions)} account(s)")

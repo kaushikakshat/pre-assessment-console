@@ -21,10 +21,11 @@ def _repro(ctx, s, sessions) -> bool:
 def run(ctx) -> ModuleResult:
     rc = ctx.run_ctx
     todo = rc.get("suspects") or []
-    if not todo:
+    if not [s for s in todo if s.get("recheck", True)]:
         return ModuleResult("completed", "No suspected findings to re-check")
-    sessions, _ = auth.login_all(ctx, ctx.deadline) if rc.get("accounts") and rc.get("login") else ({}, [])
+    sessions, _, _ = auth.login_all(ctx, ctx.deadline) if rc.get("accounts") and rc.get("login") else ({}, [], set())
     done, untested = [], 0
+    todo = [s for s in todo if s.get("recheck", True)]  # state-changing replays are never re-fired or auto-confirmed
     for s in todo:
         need = [x for x in (s.get("owner"), s.get("who")) if x]
         if any(x not in sessions for x in need):
