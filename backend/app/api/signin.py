@@ -70,7 +70,7 @@ def make_client(db, a, hosts: set[str]) -> SafeClient:
         net = _internal(first_rule(pv.rules if pv else {}, h, addrs, a.env), os.environ.get("APP_ENV", "prod"), addrs)
         if net is not False and any(ipguard.classify(x)[0] for x in addrs):
             internal[h] = net
-    return SafeClient(hosts, internal, max_requests=10)
+    return SafeClient(hosts, internal, max_requests=10, verify=not a.allow_untrusted_cert)
 
 
 def _url_ok(a, u: str) -> str | None:

@@ -56,11 +56,11 @@ class _GuardedBackend(httpcore.SyncBackend):
 
 
 class _Transport(httpx.HTTPTransport):
-    def __init__(self, backend):
+    def __init__(self, backend, verify=True):
         super().__init__()
         self._pool.close()
         # keepalive off: every request re-resolves and re-guards
-        self._pool = httpcore.ConnectionPool(ssl_context=httpx.create_ssl_context(), max_keepalive_connections=0,
+        self._pool = httpcore.ConnectionPool(ssl_context=httpx.create_ssl_context(verify=verify), max_keepalive_connections=0,
                                              network_backend=backend)
 
 
@@ -78,13 +78,13 @@ class Response:
 
 class SafeClient:
     def __init__(self, scope, internal_hosts=(), *, max_requests=MAX_REQUESTS,
-                 resolver=socket.getaddrinfo, guard=default_guard):
+                 resolver=socket.getaddrinfo, guard=default_guard, verify=True):
         # resolver/guard are injection points for tests only; nothing in env or requests reaches them.
         self.scope = {ipguard.normalize_host(h) for h in scope}
         self.max_requests, self.count = max_requests, 0
         items = internal_hosts.items() if isinstance(internal_hosts, Mapping) else ((h, None) for h in internal_hosts)
         backend = _GuardedBackend({ipguard.normalize_host(h): n for h, n in items}, resolver, guard)
-        self._client = httpx.Client(transport=_Transport(backend), follow_redirects=False, trust_env=False,
+        self._client = httpx.Client(transport=_Transport(backend, verify), follow_redirects=False, trust_env=False,
                                     timeout=httpx.Timeout(TIMEOUT))
         # No cookie jar: callers send Cookie headers explicitly, so one account's session never reaches another request.
         self._client.cookies.jar.set_policy(http.cookiejar.DefaultCookiePolicy(allowed_domains=[]))

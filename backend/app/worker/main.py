@@ -6,6 +6,7 @@ import logging
 import os
 import signal
 import socket
+import ssl
 import threading
 import time
 from datetime import datetime, timezone
@@ -103,6 +104,17 @@ def _internal_allowance(a, policy, resolver):
 ENGINE_DOWN = "The scanning engine is not running."
 
 
+UNTRUSTED_CERT = "The site's certificate is not trusted. Tick 'Allow untrusted certificate' on the assessment to scan test environments."
+
+
+def _cert_failure(e) -> bool:
+    while e is not None:
+        if isinstance(e, ssl.SSLCertVerificationError):
+            return True
+        e = e.__cause__ or e.__context__
+    return False
+
+
 def execute_module(key, ctx_args, timeout, stage_deadline=None, run_ctx=None):
     """-> (state, detail, findings, tool_version, untested). Never raises; every failure is plain and never 'completed'.
     stage_deadline (absolute monotonic) caps the module's own timeout; run_ctx is shared across the job's modules."""
@@ -110,9 +122,9 @@ def execute_module(key, ctx_args, timeout, stage_deadline=None, run_ctx=None):
     wl = bool(rc.get("wordlists")) and key in ("exposed", "dast")  # wordlist modules may use the profile's request cap
     client = SafeClient({ctx_args["host"]}, ctx_args["internal_hosts"],
                         max_requests=rc.get("request_cap", REQUEST_CAP) if wl else REQUEST_CAPS.get(key, REQUEST_CAP),
-                        resolver=ctx_args["resolver"])
+                        resolver=ctx_args["resolver"], verify=ctx_args.get("verify", True))
     deadline = time.monotonic() + timeout
-    ctx = Ctx(**{k: v for k, v in ctx_args.items() if k != "internal_hosts"}, client=client,
+    ctx = Ctx(**{k: v for k, v in ctx_args.items() if k not in ("internal_hosts", "verify")}, client=client,
               deadline=min(deadline, stage_deadline) if stage_deadline else deadline,
               run_ctx=run_ctx if run_ctx is not None else {})
     try:
@@ -126,7 +138,9 @@ def execute_module(key, ctx_args, timeout, stage_deadline=None, run_ctx=None):
         return "inconclusive", "Target rate-limited or blocked the requests", [], None, 0
     except (TimeoutError, RequestCapExceeded):
         return "inconclusive", "The check ran out of time or request budget before it finished.", [], None, 0
-    except (httpx.HTTPError, OSError, BlockedAddress, ScopeError):
+    except (httpx.HTTPError, OSError, BlockedAddress, ScopeError) as e:
+        if _cert_failure(e):
+            return "failed", UNTRUSTED_CERT, [], None, 0
         return "failed", "Could not connect to the target.", [], None, 0
     except Exception:
         log.exception("module %s crashed", key)
@@ -170,7 +184,7 @@ def run_job(job_id, worker, halt, resolver=socket.getaddrinfo):
         p = parse_target(a.target)
         args = {"url": a.target, "scheme": p.scheme, "host": p.host, "port": p.effective_port,
                 "permitted_ports": {p.effective_port, *(int(x) for x in a.ports.replace(",", " ").split() if x.isdigit())},
-                "resolver": resolver}
+                "resolver": resolver, "verify": not a.allow_untrusted_cert}
         internal = _internal_allowance(a, policy, resolver)
         args["internal"] = internal
         args["internal_hosts"] = {} if internal is False else {p.host: internal}

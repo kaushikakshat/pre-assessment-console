@@ -148,3 +148,18 @@ def test_edit_or_delete_during_validation(users, monkeypatch):
     fake_net(monkeypatch, table)
     aid = o1.post("/api/assessments", json=BODY).json()["id"]
     assert o1.post(f"/api/assessments/{aid}/validate").status_code == 200
+
+
+def test_allow_untrusted_cert_owner_only_and_audited(users):
+    o1, o2, adm = users
+    a = o1.post("/api/assessments", json=BODY).json()
+    assert a["allow_untrusted_cert"] is False
+    assert o1.patch(f"/api/assessments/{a['id']}", json={**BODY, "allow_untrusted_cert": True}).json()["allow_untrusted_cert"] is True
+    assert o1.patch(f"/api/assessments/{a['id']}", json=BODY).json()["allow_untrusted_cert"] is True  # omitted keeps it
+    assert o1.patch(f"/api/assessments/{a['id']}", json={**BODY, "allow_untrusted_cert": False}).json()["allow_untrusted_cert"] is False
+    assert o2.patch(f"/api/assessments/{a['id']}", json={**BODY, "allow_untrusted_cert": True}).status_code == 404
+    assert adm.patch(f"/api/assessments/{a['id']}", json={**BODY, "allow_untrusted_cert": True}).status_code == 404
+    with SessionLocal() as db:
+        details = list(db.scalars(select(AuditEvent.detail).where(AuditEvent.object == a["id"])))
+    assert "allow untrusted certificate: on" in details and "allow untrusted certificate: off" in details
+

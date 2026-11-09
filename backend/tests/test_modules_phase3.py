@@ -10,7 +10,7 @@ import pytest
 from app.worker import advisories
 from app.worker.modules import cms, config, exposed, tls, wordlists
 from app.worker.modules.base import Blocked
-from test_modules import local, make_ctx, serve  # noqa: F401  (serve is a fixture)
+from test_modules import cert, local, make_ctx, serve  # noqa: F401  (serve is a fixture)
 
 HTML = {"content-type": "text/html"}
 
@@ -253,3 +253,52 @@ def test_discovery_baseline_blocked_returns_status(monkeypatch):
             raise Blocked
     monkeypatch.setattr(wordlists, "read", lambda k, root=None: ["a", "b"])
     assert wordlists.discover(C(), ["Discovery/x.txt"]) == ([], "blocked", 2)
+
+
+def _cms_over_tls(cert, serve, verify, monkeypatch):
+    import functools
+
+    from app.worker import main
+    from app.worker.main import UNTRUSTED_CERT, execute_module
+    monkeypatch.setattr(main, "SafeClient", functools.partial(main.SafeClient, guard=lambda ip, allow: None))  # loopback test server
+    port = serve({"/": page(b"<html>hi</html>")}, cert("app.test"))
+    args = {"url": f"https://app.test:{port}/", "scheme": "https", "host": "app.test", "port": port, "permitted_ports": {port},
+            "resolver": local, "internal": None, "internal_hosts": {"app.test": None}, "verify": verify}
+    return execute_module("cms", args, 20, None, {}), UNTRUSTED_CERT
+
+
+def test_untrusted_cert_flag_off_gives_clear_detail(cert, serve, monkeypatch):
+    (state, detail, *_), msg = _cms_over_tls(cert, serve, True, monkeypatch)
+    assert state == "failed" and detail == msg and "Allow untrusted certificate" in msg
+
+
+def test_untrusted_cert_flag_on_runs_pinned(cert, serve, monkeypatch):
+    (state, detail, *_), _ = _cms_over_tls(cert, serve, False, monkeypatch)
+    assert state == "completed", detail
+
+
+def test_testssl_groups_dedupes_and_caps_severity(monkeypatch, serve):
+    port = serve({"/": page(b"x")})
+    ctx = make_ctx(port, "https", run_ctx={"profile": "deep"})
+    rows = [{"id": "overall_grade", "severity": "CRITICAL", "finding": "T"}, {"id": "scanTime", "severity": "MEDIUM", "finding": "1"},
+            {"id": "cert_trust", "severity": "HIGH", "finding": "self"}, {"id": "TLS1", "severity": "MEDIUM", "finding": "offered"},
+            {"id": "cipher-tls1_xc018", "severity": "CRITICAL", "finding": "a"}, {"id": "cipher-tls1_2_xc019", "severity": "HIGH", "finding": "b"},
+            {"id": "cipherlist_aNULL", "severity": "CRITICAL", "finding": "c"}, {"id": "BEAST", "severity": "MEDIUM", "finding": "d"}]
+
+    class P:
+        pid = 0
+
+        def __init__(self, args, **kw):
+            Path(args[args.index("--jsonfile") + 1]).write_text(json.dumps(rows))
+
+        def wait(self, timeout=None):
+            return 0
+
+        def poll(self):
+            return 0
+    monkeypatch.setattr(tls.subprocess, "Popen", P)
+    monkeypatch.setattr(tls.shutil, "which", lambda n: "/bin/true")
+    drafts, _, _ = tls._testssl(ctx, "127.0.0.1")
+    got = {d.title: d for d in drafts}
+    assert set(got) == {"TLS weakness: cipher", "TLS weakness: cipherlist", "TLS weakness: BEAST"}
+    assert {d.severity for d in drafts} == {"high", "medium"} and "cipher-tls1_2_xc019" in got["TLS weakness: cipher"].evidence

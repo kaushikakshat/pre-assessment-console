@@ -37,7 +37,7 @@ Check       { key: 'url'|'dns'|'addresses'|'redirects'|'ports'|'rules'|'environm
 Validation  { outcome: ValidationOutcome, checks: Check[] /* fixed order above */, normalized_target: string, policy_version: string, decided_at: string }
 Assessment  { id, name, owner: {id, name}, target, env: Environment, hosts, paths, ports, exclusions, notes: string|null,
               status: AssessmentStatus, validation: Validation|null, approval: {state:'pending'|'approved'|'refused', note: string|null, by: string|null, at: string|null, self: boolean}|null,
-              active_job_id: string|null, created_at, updated_at, access: 'owner'|'admin' }
+              allow_untrusted_cert: boolean, active_job_id: string|null, created_at, updated_at, access: 'owner'|'admin' }
 AssessmentSummary { id, name, target, env, status, validation_outcome: ValidationOutcome|null, last_job: {id, state, submitted_at}|null, open_findings: number, created_at }
 ModuleRun   { key: ModuleKey, name: string, state: ModuleState, detail: string|null, started_at: string|null, ended_at: string|null }
 Job         { id, seq: number, assessment_id, assessment_name, type: 'scan', profile: ProfileKey|null, priority: Priority, state: JobState,
@@ -78,9 +78,9 @@ MFA (TOTP) is required for every role, one prompt per sign-in.
 | GET `/catalog` | – | `{profiles: ProfileInfo[], modules: ModuleInfo[], limits: {pre, deep: {budget_min, request_cap, rate_per_s}}, advisory_as_of: string, wordlists: {key, category: 'discovery'|'fuzzing', label, lines}[] /* enabled only */}`. `pre`/`deep` and modules `crawl`,`dast`,`api` are `available` only while a healthy worker reports the engine (ZAP and egress guard) up; `cms`,`config`,`auth`,`access`,`cval` are always available. Module lists are in execution order. |
 | GET `/dashboard` | – | `{counts: {assessments, open_findings, active_jobs}, active_job: Job|null, recent: AssessmentSummary[], capacity: Capacity}` |
 | GET `/assessments` | – | `AssessmentSummary[]` (own only; admins also only their own here) |
-| POST `/assessments` | `{name, target, env, hosts, paths, ports, exclusions, notes}` | 201 `Assessment` (status `draft`). 422 with field errors (target errors per DESIGN_SYSTEM §7.2) |
+| POST `/assessments` | `{name, target, env, hosts, paths, ports, exclusions, notes, allow_untrusted_cert?}` | 201 `Assessment` (status `draft`). 422 with field errors (target errors per DESIGN_SYSTEM §7.2) |
 | GET `/assessments/{id}` | – | `Assessment` (owner, or admin read-only) |
-| PATCH `/assessments/{id}` | same fields | `Assessment`; clears validation/approval, status → `draft` |
+| PATCH `/assessments/{id}` | same fields; `allow_untrusted_cert` (owner only; omitted keeps the stored value) lets scans and sign-in tests accept self-signed or internal-CA certificates for test environments. The address is still guarded and the hostname still used for SNI. Changing it is audited as "allow untrusted certificate: on/off" | `Assessment`; clears validation/approval, status → `draft` |
 | POST `/assessments/{id}/validate` | – | `Validation`; sets status: allowed→`active`, approval→`awaiting-approval` (approval.state pending), blocked→`blocked` |
 | GET `/assessments/{id}/jobs` | – | `Job[]` newest first |
 | GET `/assessments/{id}/findings` | – | `Finding[]` sorted severity then confidence |

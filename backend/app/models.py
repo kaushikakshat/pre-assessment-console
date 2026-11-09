@@ -79,6 +79,7 @@ class Assessment(Base):
     validation: Mapped[dict | None] = mapped_column(JSONB)
     policy_version: Mapped[str | None] = mapped_column(ForeignKey("policy_versions.version"))
     approval: Mapped[dict | None] = mapped_column(JSONB)
+    allow_untrusted_cert: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     created_at: Mapped[datetime] = _ts(server_default=NOW)
     updated_at: Mapped[datetime] = _ts(server_default=NOW)
 

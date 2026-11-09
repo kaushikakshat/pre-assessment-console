@@ -97,6 +97,11 @@ def run(ctx) -> ModuleResult:
     return ModuleResult("completed", f"Checked certificate and protocol versions (negotiated {version}){' and ran testssl.sh' if deep else ''}; {len(out)} issue(s).", out, tool)
 
 
+# testssl rows that are grades or scan metadata, or that the native checks above already report
+SKIP_IDS = {"overall_grade", "scanTime", "cert_trust", "cert_chain_of_trust", "TLS1", "TLS1_1"}
+SKIP_PREFIXES = ("grade_", "engine", "service", "pre_", "scanProblem", "clientsimulation")
+
+
 def _testssl(ctx, ip):
     """Deep TLS checks with testssl.sh aimed only at the guard-checked address. -> (drafts, version, warning)."""
     exe = shutil.which("testssl.sh")
@@ -126,17 +131,20 @@ def _testssl(ctx, ip):
                 proc.wait()
     if not isinstance(rows, list):
         return [], version, "Deep TLS checks could not be completed."
-    out = []
-    seen = set()
+    groups = {}
     for r in rows:
-        if not isinstance(r, dict) or r.get("id") in seen:
+        rid, sev = str(r.get("id", "")) if isinstance(r, dict) else "", str(r.get("severity", "")).lower() if isinstance(r, dict) else ""
+        if sev not in ("medium", "high", "critical") or rid in SKIP_IDS or rid.startswith(SKIP_PREFIXES):
             continue
-        sev = str(r.get("severity", "")).lower()
-        if sev in ("medium", "high", "critical"):
-            seen.add(r.get("id"))
-            out.append(_finding(ctx, sev, f"TLS weakness: {r.get('id')}", f"testssl.sh reports {r.get('id')}: {r.get('finding')}",
-                                "Weak TLS settings can let attackers read or change traffic.", "Follow the testssl.sh finding to change the TLS configuration.",
-                                f"{ctx.host}:{ctx.port}\n{r.get('id')}: {str(r.get('finding'))[:300]}" + (f"\n{r['cve']}" if r.get("cve") else "")))
+        g = groups.setdefault(re.match(r"[A-Za-z0-9]+", rid).group(0) if re.match(r"[A-Za-z0-9]+", rid) else rid, {})
+        g.setdefault(rid, (sev, str(r.get("finding"))[:200], r.get("cve")))
+    out = []
+    for cat, rows_ in groups.items():
+        sev = "high" if any(x[0] in ("high", "critical") for x in rows_.values()) else "medium"  # one testssl row never means critical
+        lines = [f"{i}: {x[1]}" + (f" ({x[2]})" if x[2] else "") for i, x in list(rows_.items())[:30]]
+        out.append(_finding(ctx, sev, f"TLS weakness: {cat}", f"testssl.sh reports {len(rows_)} issue(s) in the {cat} category.",
+                            "Weak TLS settings can let attackers read or change traffic.", "Follow the testssl.sh findings to change the TLS configuration.",
+                            f"{ctx.host}:{ctx.port}\n" + "\n".join(lines)))
     return out, version, ""
 
 
