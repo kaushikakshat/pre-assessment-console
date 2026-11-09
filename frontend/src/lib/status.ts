@@ -92,3 +92,10 @@ export const CONFIDENCE: Record<Confidence, { label: string; dots: number }> = {
 };
 
 export const PROFILE_NAMES = { quick: 'Quick Scan', pre: 'Pre-Assessment', deep: 'Deep Scan' } as const;
+
+// DESIGN_SYSTEM §8 standard messages for blocked submissions.
+export const BLOCKED_COPY = {
+  emergency: 'An administrator used Emergency stop. New scans are blocked until it is lifted.',
+  paused: 'An administrator has paused new scans. Submissions are not accepted until scanning resumes.',
+  'queue-down': 'The scan queue service is not responding, so new submissions are refused.',
+} as const;

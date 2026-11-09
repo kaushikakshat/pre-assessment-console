@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { Icon } from './Icon';
+import { formatIST } from '../lib/format';
 
 export function Card({ title, action, flush, children }: { title?: ReactNode; action?: ReactNode; flush?: boolean; children: ReactNode }) {
   return (
@@ -79,5 +80,14 @@ export function EvidenceBlock({ text }: { text: string }) {
       </pre>
       <figcaption>Sanitized excerpt. Cookies, tokens and personal data are redacted.</figcaption>
     </figure>
+  );
+}
+
+export function Timeline({ rows, empty = 'Nothing recorded yet.' }: { rows: { at: string; text: ReactNode }[]; empty?: string }) {
+  if (rows.length === 0) return <p className="muted">{empty}</p>;
+  return (
+    <ul className="timeline">
+      {rows.map((r, i) => <li key={i}><span className="muted">{formatIST(r.at)}</span><span>{r.text}</span></li>)}
+    </ul>
   );
 }

@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 import { Navigate, Outlet, useLocation } from 'react-router-dom';
-import { api, ApiError } from '../lib/api';
+import { api, ApiError, setUnauthorizedHandler } from '../lib/api';
 import type { Me } from '../lib/types';
 import { DeniedState } from '../components/Card';
 
@@ -22,8 +22,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signOut = useCallback(async () => {
-    try { await api('/auth/logout', { method: 'POST' }); } finally { setUser(null); }
+    try { await api('/auth/logout', { method: 'POST' }); } catch { /* the session is dropped locally either way */ }
+    setUser(null);
   }, []);
+
+  useEffect(() => { setUnauthorizedHandler(() => setUser(null)); return () => setUnauthorizedHandler(null); }, []);
 
   return <Ctx.Provider value={{ user, loading, setUser, signOut }}>{children}</Ctx.Provider>;
 }

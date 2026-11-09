@@ -244,7 +244,27 @@ input[type="checkbox"], input[type="radio"] { width: 16px; height: 16px; margin:
 .code-digit { width: 100%; max-width: 48px; padding: 0; text-align: center; font-size: 18px; }
 .secret { padding: var(--space-3); background: var(--surface-2); border-radius: var(--r-md); letter-spacing: 0.08em; overflow-wrap: anywhere; }
 
+/* F2 owner screens */
+.page-head { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: var(--space-3); }
+.page-head .sub { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); color: var(--ink-muted); }
+.page-head .sub .mono { color: var(--ink); }
+.stats-3 { grid-template-columns: repeat(3, 1fr); }
+.sticky { position: sticky; top: 72px; align-self: start; }
+.seg-ctl { display: inline-flex; border: 1px solid var(--border-strong); border-radius: var(--r-md); overflow: hidden; }
+.seg-ctl button { padding: 6px 14px; background: var(--surface-1); color: var(--ink); border: 0; font: 500 13px/18px var(--font-sans); cursor: pointer; }
+.seg-ctl button[aria-pressed="true"] { background: var(--primary); color: var(--on-primary); }
+.opt-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--space-3); }
+.timeline { list-style: none; margin: 0; padding: 0; font-size: 13px; line-height: 18px; }
+.timeline li { display: grid; grid-template-columns: 132px 1fr; gap: var(--space-3); padding: 8px 0; border-top: 1px solid var(--border); }
+.filters { display: flex; flex-wrap: wrap; align-items: end; gap: var(--space-3); }
+.group-title { padding: 8px 12px; background: var(--surface-2); font: 600 13px/18px var(--font-sans); }
+.prewrap { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
+.drawer-body h3 { font: 600 14px/20px var(--font-sans); margin-bottom: var(--space-1); }
+.btn-link { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
 @media (max-width: 1100px) {
+  .stats-3 { grid-template-columns: 1fr; }
+  .sticky { position: static; }
+  .opt-grid { grid-template-columns: 1fr; }
   .grid2, .profile-grid { grid-template-columns: 1fr; }
   .stats { grid-template-columns: repeat(2, 1fr); }
 }
@@ -257,6 +277,7 @@ input[type="checkbox"], input[type="radio"] { width: 16px; height: 16px; margin:
   .alert-bar { padding: var(--space-4) max(16px, env(safe-area-inset-left)) 0; }
   .page { padding: var(--space-4) max(16px, env(safe-area-inset-left)); }
   .stats, .f2 { grid-template-columns: 1fr; }
+  .timeline li { grid-template-columns: 1fr; gap: 0; }
   .kv-row { grid-template-columns: 1fr; gap: 0; }
   .drawer { width: 100%; }
   .checks li { grid-template-columns: 16px 1fr; }

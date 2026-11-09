@@ -4,6 +4,11 @@ import { Shell } from './pages/Shell';
 import { SignIn } from './pages/SignIn';
 import { Help } from './pages/Help';
 import { Stub } from './pages/Stub';
+import { Dashboard } from './pages/Dashboard';
+import { Assessments } from './pages/Assessments';
+import { Wizard } from './pages/Wizard';
+import { AssessmentDetail } from './pages/AssessmentDetail';
+import { Queue } from './pages/Queue';
 import { EmptyState } from './components';
 
 function Home() {
@@ -17,12 +22,12 @@ export function App() {
       <Route element={<RequireAuth />}>
         <Route element={<Shell />}>
           <Route index element={<Home />} />
-          <Route path="dashboard" element={<Stub title="Dashboard" />} />
-          <Route path="assessments" element={<Stub title="My Assessments" />} />
-          <Route path="assessments/new" element={<Stub title="New assessment" />} />
-          <Route path="assessments/:id" element={<Stub title="Assessment" />} />
-          <Route path="assessments/:id/scan" element={<Stub title="New scan" />} />
-          <Route path="queue" element={<Stub title="Scan Queue" />} />
+          <Route path="dashboard" element={<Dashboard />} />
+          <Route path="assessments" element={<Assessments />} />
+          <Route path="assessments/new" element={<Wizard />} />
+          <Route path="assessments/:id" element={<AssessmentDetail />} />
+          <Route path="assessments/:id/scan" element={<Wizard />} />
+          <Route path="queue" element={<Queue />} />
           <Route path="help" element={<Help />} />
           <Route path="admin" element={<RequireAdmin />}>
             <Route index element={<Stub title="Admin overview" />} />

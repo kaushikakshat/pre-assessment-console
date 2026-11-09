@@ -8,6 +8,9 @@ import { Textarea, TextField } from './Fields';
 
 const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
 
+// Open overlays, topmost last: only the top one reacts to keys (a dialog opened from a drawer).
+const stack: object[] = [];
+
 function useOverlay(onClose: () => void) {
   const ref = useRef<HTMLDivElement>(null);
   const close = useRef(onClose);
@@ -16,7 +19,10 @@ function useOverlay(onClose: () => void) {
     const trigger = document.activeElement as HTMLElement | null;
     const el = ref.current!;
     (el.querySelector<HTMLElement>(FOCUSABLE) ?? el).focus();
+    const me = {};
+    stack.push(me);
     const onKey = (e: KeyboardEvent) => {
+      if (stack[stack.length - 1] !== me) return;
       if (e.key === 'Escape') { e.stopPropagation(); close.current(); }
       if (e.key !== 'Tab') return;
       const items = [...el.querySelectorAll<HTMLElement>(FOCUSABLE)];
@@ -26,7 +32,7 @@ function useOverlay(onClose: () => void) {
       else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
     };
     document.addEventListener('keydown', onKey);
-    return () => { document.removeEventListener('keydown', onKey); trigger?.focus?.(); };
+    return () => { stack.splice(stack.indexOf(me), 1); document.removeEventListener('keydown', onKey); trigger?.focus?.(); };
   }, []);
   return ref;
 }
