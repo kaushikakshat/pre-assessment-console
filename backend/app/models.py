@@ -148,7 +148,7 @@ class Finding(Base):
     last_seen_at: Mapped[datetime] = _ts(server_default=NOW)
     history: Mapped[list] = mapped_column(JSONB, server_default="[]")
     comments: Mapped[list] = mapped_column(JSONB, server_default="[]")
-    credential_id: Mapped[int | None] = mapped_column(Integer)
+    credential_id: Mapped[int | None] = mapped_column(ForeignKey("credentials.id", ondelete="SET NULL"))
 
 
 class Worker(Base):
@@ -214,6 +214,7 @@ class Credential(Base):
     assessment_id: Mapped[int] = mapped_column(ForeignKey("assessments.id", ondelete="CASCADE"), index=True)
     role_label: Mapped[str] = mapped_column(Text)
     username_enc: Mapped[bytes] = mapped_column(BYTEA)
+    username_hint: Mapped[str] = mapped_column(Text, server_default="")  # plaintext first chars; the API cannot decrypt
     password_enc: Mapped[bytes] = mapped_column(BYTEA)
     last_test: Mapped[str | None] = mapped_column(Text)  # ok | failed
     last_tested_at: Mapped[datetime | None] = _ts()

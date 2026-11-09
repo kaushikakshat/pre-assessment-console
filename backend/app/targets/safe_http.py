@@ -90,7 +90,8 @@ class SafeClient:
         if not (isinstance(t, _Transport) and t._pool._network_backend is backend and not self._client._mounts):
             raise RuntimeError("SafeClient transport is not the guarded transport")
 
-    def request(self, method: str, url: str, headers: dict | None = None, deadline: float | None = None) -> Response:
+    def request(self, method: str, url: str, headers: dict | None = None, deadline: float | None = None,
+                data: bytes | None = None) -> Response:
         """deadline: absolute time.monotonic() value shared across a multi-request operation."""
         u = httpx.URL(url)
         if u.scheme not in ("http", "https") or u.host.lower() not in self.scope:
@@ -102,7 +103,7 @@ class SafeClient:
         if end - time.monotonic() <= 0:
             raise TimeoutError("Time budget exhausted")
         body, truncated = bytearray(), False
-        with self._client.stream(method, u, headers={"Accept-Encoding": "identity", **(headers or {})},
+        with self._client.stream(method, u, content=data, headers={"Accept-Encoding": "identity", **(headers or {})},
                                  timeout=httpx.Timeout(end - time.monotonic())) as r:
             for chunk in r.iter_raw():  # raw: we decode ourselves with a hard output cap
                 body += chunk

@@ -85,6 +85,11 @@ MFA (TOTP) is required for every role, one prompt per sign-in.
 | GET `/assessments/{id}/jobs` | – | `Job[]` newest first |
 | GET `/assessments/{id}/findings` | – | `Finding[]` sorted severity then confidence |
 | GET `/assessments/{id}/activity` | – | `AuditEvent[]` for this assessment (owner, admin) |
+| GET `/assessments/{id}/signin` | – | `{setup: {style, login_url, username_field, password_field, code_field, otp_url, otp_field, logged_in_indicator, logged_out_indicator, bypass_code_set, updated_at}|null, accounts: [{id, role_label, username_hint, last_test: 'ok'|'failed'|null, last_tested_at}]}`. Owner only (admins get 404). No secret is ever returned; `username_hint` is the first 2 characters + `•••` |
+| PUT `/assessments/{id}/signin` | `{style: 'single'|'two-step', login_url, username_field, password_field, code_field?, otp_url?, otp_field?, logged_in_indicator, logged_out_indicator?, bypass_code?}` | setup (as above). `bypass_code` omitted keeps the stored value, `""` clears it. 422 `{fields}`; URLs outside the in-scope hosts: `login_url`/`otp_url` "The login page must be on an in-scope host." |
+| POST `/assessments/{id}/accounts` | `{role_label, username, password, test, authorized, bypass_code?}` | 201 `{id, role_label, username_hint, last_test, last_tested_at, test_result: string|null}`. Max 10 per assessment (409). `test` needs `authorized: true` (422) and a validation outcome of allowed or approved (409), plus saved setup (409); it signs in from the API within 20 s. `bypass_code` here is used for that test only and never stored (the API cannot decrypt the saved one). Password and username are sealed with the public key and write-only |
+| PUT `/assessments/{id}/accounts/{cid}` | `{role_label?, username, password, test, authorized, bypass_code?}` | same shape; replaces the sealed credentials |
+| DELETE `/assessments/{id}/accounts/{cid}` | – | 204; soft delete, encrypted fields blanked |
 | GET `/findings/{id}` | – | `FindingDetail` |
 | POST `/findings/{id}/state` | `{action: 'acknowledge'|'under-review'|'false-positive'|'accept-risk'|'reopen', reason?}` | `FindingDetail`; transitions + required reasons per DESIGN_SYSTEM §7.6; owner only |
 | POST `/findings/{id}/comments` | `{text}` | `FindingDetail`; owner only |
