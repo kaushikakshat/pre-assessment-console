@@ -16,7 +16,7 @@ services:
       retries: 20
 
   migrate:
-    build: ./backend
+    build: {context: ./backend, target: runtime}
     environment:
       MIGRATION_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-preassess}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-preassess}
     command: alembic upgrade head
@@ -24,7 +24,7 @@ services:
       db: {condition: service_healthy}
 
   api:
-    build: ./backend
+    build: {context: ./backend, target: runtime}
     environment:
       APP_ENV: ${APP_ENV:-prod}
       SECRET_KEY: ${SECRET_KEY:?set in .env}
@@ -39,7 +39,7 @@ services:
     # no published port: nginx (web) is the only entry, so trusting X-Forwarded-For from any peer is safe
 
   worker:
-    build: ./backend
+    build: {context: ./backend, target: runtime}
     environment:
       APP_ENV: ${APP_ENV:-prod}
       SECRET_KEY: ${SECRET_KEY:?set in .env}
@@ -59,7 +59,7 @@ services:
   # Guard proxy: the only path out for ZAP. No published ports. On `engine` (zap, worker) and `outbound` (internet) only,
   # never `default`, so api/db/web cannot reach it. Control API (3129) is token-gated: zap can reach it on `engine` but has no token.
   egress:
-    build: ./backend
+    build: {context: ./backend, target: runtime}
     environment:
       APP_ENV: ${APP_ENV:-prod}
       EGRESS_TOKEN: ${EGRESS_TOKEN:?set in .env}
@@ -92,7 +92,7 @@ services:
 
   # Only for pytest; owner creds live here, never in long-running services.
   test:
-    build: ./backend
+    build: {context: ./backend, target: test}
     profiles: [test]
     environment:
       TEST_DATABASE_URL: postgresql+psycopg://app_user:${APP_DB_PASSWORD}@db:5432/preassess_test

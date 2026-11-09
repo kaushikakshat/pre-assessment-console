@@ -64,7 +64,7 @@ pre { background: #f3f4f6; border: 1px solid #ddd; padding: 6pt; white-space: pr
 <h3>Evidence</h3><pre>{{ d.evidence }}</pre>
 <h3>How to reproduce</h3><p>{{ d.reproduce }}</p>
 <h3>Remediation</h3><p>{{ d.remediation }}</p>{% if d.references %}<ul>{% for r in d.references %}<li>{{ r }}</li>{% endfor %}</ul>{% endif %}
-<h3>History</h3><table>{% for h in d.history %}<tr><td style="width:110pt">{{ h.at }}</td><td>{{ h.text }}</td></tr>{% endfor %}</table></div>{% endfor %}{% endif %}
+<h3>History</h3><table>{% for h in d.history %}<tr><td style="width:110pt">{{ h.at|ist }}</td><td>{{ h.text }}</td></tr>{% endfor %}</table></div>{% endfor %}{% endif %}
 
 <h2>Limitations</h2><p>{{ m.limitations }}</p>
 </body></html>

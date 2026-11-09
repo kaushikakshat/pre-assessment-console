@@ -309,30 +309,46 @@ REPORT_FAILED = "Report generation failed — your assessment results are unchan
 
 
 def generate_report(db) -> bool:
-    """Claim one pending report (the row lock is held while rendering, so a crash releases it) and render it.
-    Reports stuck 'generating' past the staleness window are failed. Never touches a job or runs a scan."""
+    """Claim one unclaimed report (claimed_at set and committed, no lock held while rendering) and render it.
+    Reports claimed more than REPORT_STALE ago and still 'generating' (a crash) are failed. Never touches a job."""
     from app.reports import model, pdf  # weasyprint is imported by the worker only
-    db.execute(update(Report).where(Report.state == "generating", Report.created_at < func.now() - text(f"interval '{REPORT_STALE}'"),
-                                    Report.id.in_(select(Report.id).where(Report.state == "generating").with_for_update(skip_locked=True)))
+    db.execute(update(Report).where(Report.state == "generating", Report.claimed_at < func.now() - text(f"interval '{REPORT_STALE}'"))
                .values(state="failed", error=REPORT_FAILED))
-    db.commit()
-    r = db.scalar(select(Report).where(Report.state == "generating").order_by(Report.id).limit(1).with_for_update(skip_locked=True))
+    r = db.scalar(select(Report).where(Report.state == "generating", Report.claimed_at.is_(None)).order_by(Report.id).limit(1)
+                  .with_for_update(skip_locked=True))
     if not r:
+        db.commit()
         return False
+    r.claimed_at = func.now()
+    rid = r.id
+    db.commit()
     try:
+        r = db.get(Report, rid)
         m = model.build(db, r)
         d = Path(os.environ.get("REPORTS_DIR", "/data/reports"))
         d.mkdir(parents=True, exist_ok=True)
         path = str(d / f"{r.display_id}-v{r.version}.pdf")
         pdf.render(m, path)
-        r.model, r.pdf_path, r.state, r.error = m, path, "ready", None
+        vals = dict(model=m, pdf_path=path, state="ready", error=None)
     except Exception:
-        log.exception("report %s failed", r.display_id)
+        log.exception("report %s failed", rid)
         db.rollback()
-        r = db.scalar(select(Report).where(Report.id == r.id).with_for_update())
-        r.state, r.error = "failed", REPORT_FAILED
+        vals = dict(state="failed", error=REPORT_FAILED)
+    db.execute(update(Report).where(Report.id == rid, Report.state == "generating").values(**vals))  # a sweep may have failed it
     db.commit()
     return True
+
+
+def report_loop(stop, every=5):
+    """Own thread and session per worker: a long scan on the main loop never delays reports."""
+    while not stop.is_set():
+        try:
+            with SessionLocal() as db:
+                while generate_report(db) and not stop.is_set():
+                    pass
+        except Exception:
+            log.exception("report loop error")
+        stop.wait(every)
 
 
 def register(db, name):
@@ -397,13 +413,13 @@ def main():
         except Exception:
             log.exception("wordlist seeding failed")
             db.rollback()
+    threading.Thread(target=report_loop, args=(stop,), daemon=True).start()  # not under a scan lease, not counted by the gate
     log.info("worker started")
     while not stop.is_set():
         try:
             with SessionLocal() as db:
                 heartbeat(db, name, engine_ok=engine_ok())
                 reap_expired(db)
-                generate_report(db)  # between jobs: not under a scan lease, not counted by the gate
                 job = None if stop.is_set() else claim_next(db, name)
                 job_id = job.id if job else None
             if job_id:

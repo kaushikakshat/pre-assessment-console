@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 from markupsafe import Markup
+from app.reports.model import ist
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from weasyprint import HTML
 
@@ -11,8 +12,15 @@ _env = Environment(loader=FileSystemLoader(Path(__file__).parent / "templates"),
 _env.filters["cs"] = lambda s: Markup("".join(f"\\{ord(c):x} " if c in '"\\\n\r<>&' else c for c in str(s)))
 
 
+_env.filters["ist"] = ist
+
+
+def no_fetch(url, *a, **k):
+    raise ValueError("The report renderer never fetches resources")  # fonts come from fontconfig; nothing else is needed
+
+
 def render(model: dict, path: str) -> None:
     html = _env.get_template("report.html.j2").render(m=model)
     tmp = f"{path}.tmp"
-    HTML(string=html).write_pdf(tmp)
+    HTML(string=html, url_fetcher=no_fetch).write_pdf(tmp)
     os.replace(tmp, path)  # a reader never sees a half-written file

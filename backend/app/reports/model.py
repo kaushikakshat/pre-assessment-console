@@ -10,7 +10,7 @@ from app.worker.redact import redact
 
 WATERMARK = ("PRE-ASSESSMENT RESULTS — not a penetration test, statutory certificate or security clearance. "
              "Results are not exhaustive and may include false positives.")
-LIMITATIONS = ("This report reflects the checks that ran against the target at the time of the scan. Checks that were blocked, "
+LIMITATIONS = ("Finding states are shown as of {at}. This report reflects the checks that ran against the target at the time of the scan. Checks that were blocked, "
                "skipped, interrupted or could not finish are listed as not tested. A finding marked suspected has not been "
                "confirmed and may be a false positive. Absence of a finding does not mean the target is secure. This is not a "
                "penetration test, statutory certificate or security clearance.")
@@ -18,7 +18,7 @@ CATEGORIES = [("confirmed", "Confirmed"), ("suspected", "Suspected"), ("false-po
               ("unresolved", "Unresolved"), ("blocked", "Blocked"), ("skipped", "Skipped"), ("not-tested", "Not tested")]
 SEV = ["critical", "high", "medium", "low", "info"]
 OPEN = ("new", "open", "under-review", "reopened", "not-retested")
-NOT_TESTED = ("interrupted", "inconclusive", "unavailable", "failed", "skipped", "queued", "running", "cancelled")
+NOT_TESTED = ("interrupted", "inconclusive", "unavailable", "failed", "queued", "running", "cancelled")
 NAMES = {k: n for k, n, _ in MODULES}
 PROFILE_NAMES = {k: n for k, n, *_ in PROFILES}
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -75,13 +75,14 @@ def build(db, report: Report) -> dict:
 
     def where(f):
         last = next((h["text"] for h in reversed(f.history or []) if h["text"].startswith(("Fixed in", "Still present in"))), None)
-        return {**(f.location or {}), "module": NAMES.get(f.module, f.module), "engine_version": ver.get(f.module),
+        return {"path": None, "param": None, "method": None, **(f.location or {}), "module": NAMES.get(f.module, f.module), "engine_version": ver.get(f.module),
                 "found_by": f"{job.display_id} · {job.policy_version or 'no policy'}", "first_seen": ist(f.first_seen_at),
                 "last_seen": ist(f.last_seen_at), "latest_retest": last}
 
+    now = ist(datetime.now(timezone.utc))
     m = {"header": {"product": "Pre-Assessment Platform", "classification": "TBD · OD-8"},
          "title": {"assessment": a.name, "type": "Technical report" if tech else "Management summary",
-                   "report_id": report.display_id, "version": report.version, "generated_at": ist(datetime.now(timezone.utc)), "by": by},
+                   "report_id": report.display_id, "version": report.version, "generated_at": now, "by": by},
          "watermark": WATERMARK,
          "scope": {"target": a.target, "in_scope": a.hosts, "exclusions": a.exclusions or "None", "environment": a.env,
                    "scan": f"{job.display_id} · {PROFILE_NAMES.get(job.profile, 'Custom modules')}",
@@ -96,6 +97,6 @@ def build(db, report: Report) -> dict:
          "details": [{"id": f.display_id, "severity": f.severity, "confidence": f.confidence, "state": f.state, "title": f.title,
                       "location": where(f), "description": f.description, "impact": f.impact, "evidence": f.evidence,
                       "reproduce": f.reproduce, "remediation": f.remediation, "references": f.references or [],
-                      "history": [{**h, "at": ist(h["at"])} for h in f.history or []]} for f in live] if tech else [],
-         "limitations": LIMITATIONS}
+                      "history": f.history or []} for f in live] if tech else [],
+         "limitations": LIMITATIONS.format(at=now)}
     return _scrub(m)

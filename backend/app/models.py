@@ -247,4 +247,5 @@ class Report(Base):
     pdf_path: Mapped[str | None] = mapped_column(Text)
     requested_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = _ts(server_default=NOW)
+    claimed_at: Mapped[datetime | None] = _ts()  # set when the worker starts rendering; staleness runs from here
     error: Mapped[str | None] = mapped_column(Text)

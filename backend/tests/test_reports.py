@@ -1,6 +1,12 @@
+import socket
+import threading
+import time
+
 import pytest
 from pypdf import PdfReader
-from sqlalchemy import select
+from datetime import datetime, timedelta
+
+from sqlalchemy import func, select
 
 from app.db import SessionLocal
 from app.models import AuditEvent, Finding, Job, ModuleRun, Report
@@ -121,7 +127,7 @@ def test_stale_generating_report_fails(world):  # noqa: F811
     c, a, aid, uid = world
     rep = make(c, a, seed(aid, uid))
     with SessionLocal() as db, db.begin():
-        db.execute(Report.__table__.update().values(created_at=Report.created_at - __import__("datetime").timedelta(minutes=11)))
+        db.execute(Report.__table__.update().values(claimed_at=func.now() - timedelta(minutes=11)))
     with SessionLocal() as db:
         assert not wm.generate_report(db)
     assert c.get(f"/api/reports/{rep['id']}").json()["state"] == "failed"
@@ -136,3 +142,47 @@ def test_report_other_owner_404(world):  # noqa: F811
         assert r.status_code == 404
     other_aid, other_uid = make_assessment()
     assert c.post(f"/api/assessments/{a}/reports", json={"type": "technical", "job_id": seed(other_aid, other_uid)}).status_code == 422
+
+
+def test_report_generated_by_thread_while_main_loop_busy(world):  # noqa: F811
+    c, a, aid, uid = world
+    rep = make(c, a, seed(aid, uid))  # the main loop is "busy" with a scan: only report_loop is running
+    with SessionLocal() as db, db.begin():  # requested long ago: must not be swept before it is tried
+        db.execute(Report.__table__.update().values(created_at=func.now() - timedelta(minutes=30)))
+    stop = threading.Event()
+    t = threading.Thread(target=wm.report_loop, args=(stop, 0.1), daemon=True)
+    t.start()
+    end = time.monotonic() + 20
+    while time.monotonic() < end and c.get(f"/api/reports/{rep['id']}").json()["state"] == "generating":
+        time.sleep(0.2)
+    stop.set()
+    t.join(5)
+    assert c.get(f"/api/reports/{rep['id']}").json()["state"] == "ready"
+
+
+def test_model_history_is_iso_and_location_defaults(world):  # noqa: F811
+    c, a, aid, uid = world
+    m = build(make(c, a, seed(aid, uid))["id"])
+    d = m["details"][0]
+    assert datetime.fromisoformat(d["history"][0]["at"].replace("Z", "+00:00"))
+    assert d["location"]["path"] is None and d["location"]["param"] is None and d["location"]["method"] is None
+    assert "Finding states are shown as of" in m["limitations"]
+
+
+def test_pdf_never_fetches_resources(world, tmp_path):  # noqa: F811
+    c, a, aid, uid = world
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(5)
+    srv.settimeout(0.5)
+    m = build(make(c, a, seed(aid, uid))["id"])
+    url = f"http://127.0.0.1:{srv.getsockname()[1]}/x"
+    m["details"][0]["description"] = f'<img src="{url}"> body{{background:url({url})}}'
+    m["details"][0]["history"][0]["text"] = f"@import url({url});"
+    out = str(tmp_path / "r.pdf")
+    pdf.render(m, out)
+    with pytest.raises(socket.timeout):
+        srv.accept()
+    assert open(out, "rb").read(4) == b"%PDF"
+    with pytest.raises(ValueError):
+        pdf.no_fetch(url)

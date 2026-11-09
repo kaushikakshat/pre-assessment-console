@@ -90,7 +90,7 @@ def retry(rid: str, user=Depends(sec.current_user), db=Depends(get_db)):
         raise HTTPException(404, "Not found.")
     if r.state != "failed":
         raise HTTPException(409, "Only a failed report can be retried.")
-    r.state, r.error, r.created_at = "generating", None, func.now()  # created_at restarts the staleness clock
+    r.state, r.error, r.claimed_at = "generating", None, None  # unclaimed again: the worker picks it up
     record(db, user.email, "assessment", "report-retried", r.display_id, "success", "Report generation retried")
     db.commit()
     db.refresh(r)
