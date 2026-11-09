@@ -32,7 +32,7 @@ Phase 2 implements modules `reach, ports, tls, headers, exposed, finger` (= Quic
 ## Shapes
 ```ts
 User        { id, name, email, role: Role, team: string|null, status: 'active'|'deactivated', mfa: 'enrolled'|'pending', last_login_at: string|null, sessions: number }
-Me          { id, name, email, role: Role, team: string|null }
+Me          { id, name, email, role: Role, team: string|null, must_change_password: boolean }
 Check       { key: 'url'|'dns'|'addresses'|'redirects'|'ports'|'rules'|'environment', label: string, result: CheckResult, detail: string }
 Validation  { outcome: ValidationOutcome, checks: Check[] /* fixed order above */, normalized_target: string, policy_version: string, decided_at: string }
 Assessment  { id, name, owner: {id, name}, target, env: Environment, hosts, paths, ports, exclusions, notes: string|null,
@@ -65,7 +65,10 @@ ProfileInfo { key: ProfileKey, name, description, modules: ModuleKey[], availabl
 | POST `/auth/mfa` | `{code}` | 200 `Me`; sets `pa_session` + `pa_csrf`. 401 "That code is not valid. Try again." |
 | POST `/auth/logout` | – | 204 |
 | GET `/auth/me` | – | `Me` or 401 |
+| POST `/auth/password` | `{current_password, new_password}` | 200 `Me`; stores the new password, clears `must_change_password`, signs out the user's other sessions (this one stays). 400 "Your current password is incorrect." (counts toward the login throttle) · 422 `{fields: {new_password}}` "Use at least 12 characters." (12-256) / "Choose a password you have not just used." · 429 as login |
 | GET `/auth/csrf` | – | 204, (re)sets `pa_csrf` |
+
+While `must_change_password` is true (admin-created accounts and `create-admin`), every endpoint outside `/auth/*` returns 403 "Change your temporary password to continue."
 
 MFA (TOTP) is required for every role, one prompt per sign-in.
 

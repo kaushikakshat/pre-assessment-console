@@ -8,6 +8,11 @@ let onUnauthorized: (() => void) | null = null;
 /** AuthContext registers this so any 401 from a non-auth endpoint signs the user out. */
 export const setUnauthorizedHandler = (fn: (() => void) | null) => { onUnauthorized = fn; };
 
+let onPasswordRequired: (() => void) | null = null;
+/** AuthContext registers this so a 403 "change your temporary password" sends the user to the change-password page. */
+export const setPasswordRequiredHandler = (fn: (() => void) | null) => { onPasswordRequired = fn; };
+export const PASSWORD_REQUIRED = 'Change your temporary password to continue.';
+
 const csrfCookie = () => document.cookie.split('; ').find((c) => c.startsWith('pa_csrf='))?.slice(8);
 
 async function send(path: string, method: string, body: unknown, headers: Record<string, string>) {
@@ -44,5 +49,6 @@ export async function api<T = void>(path: string, opts: { method?: string; body?
     else if (j.detail?.fields) { fields = j.detail.fields; detail = 'Check the highlighted fields.'; }
   } catch { /* non-JSON error body: keep the generic sentence */ }
   if (res.status === 401 && !path.startsWith('/auth/')) onUnauthorized?.();
+  if (res.status === 403 && detail === PASSWORD_REQUIRED) onPasswordRequired?.();
   throw new ApiError(res.status, detail, fields);
 }

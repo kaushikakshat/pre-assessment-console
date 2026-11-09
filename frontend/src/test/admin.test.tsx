@@ -5,7 +5,7 @@ import { App } from '../App';
 import { AuthProvider } from '../auth/AuthContext';
 import { ToastProvider } from '../components';
 
-let me: Record<string, unknown> = { id: 'U-001', name: 'Ada Admin', email: 'ada@example.test', role: 'admin', team: null };
+let me: Record<string, unknown> = { id: 'U-001', name: 'Ada Admin', email: 'ada@example.test', role: 'admin', team: null, must_change_password: false };
 const json = (status: number, body?: unknown) => new Response(body === undefined ? null : JSON.stringify(body), { status });
 const capacity = { active: 0, limit: 1, effective_limit: 1, queued: 0, healthy_workers: 1, ceiling: 3, blocked_reason: null };
 const config = { limit: 1, aging_enabled: false, aging_minutes: 30, queue_cap: 50, per_user_quota: 3, paused: false };

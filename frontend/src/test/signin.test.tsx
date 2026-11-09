@@ -5,7 +5,7 @@ import { App } from '../App';
 import { AuthProvider } from '../auth/AuthContext';
 import { ToastProvider } from '../components';
 
-const me = { id: 'U-001', name: 'Asha Rao', email: 'asha@example.test', role: 'owner', team: null };
+const me = { id: 'U-001', name: 'Asha Rao', email: 'asha@example.test', role: 'owner', team: null, must_change_password: false };
 const json = (status: number, body?: unknown) => new Response(body === undefined ? null : JSON.stringify(body), { status });
 
 function mount(path = '/dashboard') {

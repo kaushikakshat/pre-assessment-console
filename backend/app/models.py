@@ -29,6 +29,7 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(Text)
     totp_secret: Mapped[str | None] = mapped_column(Text)
     mfa_enrolled: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    must_change_password: Mapped[bool] = mapped_column(Boolean, server_default="false")
     last_totp_step: Mapped[int | None] = mapped_column(BigInteger)
     last_login_at: Mapped[datetime | None] = _ts()
     validating_until: Mapped[datetime | None] = _ts()

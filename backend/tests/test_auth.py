@@ -234,3 +234,71 @@ def test_duplicate_email_differing_in_case_409():
         db.add(User(name="x", email="Dupe.CASE@example.test", role="owner", password_hash="x"))
         with pytest.raises(IntegrityError):
             db.flush()
+
+
+def _flag(email, value=True):
+    with SessionLocal() as db, db.begin():
+        db.query(User).filter_by(email=email).one().must_change_password = value
+
+
+def test_change_password_revokes_other_sessions_keeps_current():
+    email = make_user()
+    c = signin(email)
+    with SessionLocal() as db, db.begin():  # allow the same TOTP step again (replay guard)
+        db.query(User).filter_by(email=email).one().last_totp_step = None
+    other = signin(email)
+    r = c.post("/api/auth/password", json={"current_password": PW, "new_password": "a brand new pass"})
+    assert r.status_code == 200 and r.json()["must_change_password"] is False
+    assert c.get("/api/auth/me").status_code == 200
+    assert other.get("/api/auth/me").status_code == 401
+    assert TestClient(app).post("/api/auth/login", json={"email": email, "password": PW}).status_code == 401
+    assert TestClient(app).post("/api/auth/login", json={"email": email, "password": "a brand new pass"}).status_code == 200
+    with SessionLocal() as db:
+        ev = db.execute(text("SELECT * FROM audit_events WHERE area='auth' AND action='password-change'")).all()
+        assert ev and "brand new" not in str(ev) and PW not in str(ev)
+
+
+def test_change_password_wrong_current_throttled():
+    c = signin(make_user())
+    for _ in range(5):
+        r = c.post("/api/auth/password", json={"current_password": "x", "new_password": "a brand new pass"})
+        assert (r.status_code, r.json()["detail"]) == (400, "Your current password is incorrect.")
+    r = c.post("/api/auth/password", json={"current_password": PW, "new_password": "a brand new pass"})
+    assert r.status_code == 429
+
+
+def test_change_password_validation():
+    c = signin(make_user())
+    r = c.post("/api/auth/password", json={"current_password": PW, "new_password": "short"})
+    assert r.status_code == 422 and r.json()["detail"]["fields"]["new_password"] == "Use at least 12 characters."
+    r = c.post("/api/auth/password", json={"current_password": PW, "new_password": PW})
+    assert r.status_code == 422 and r.json()["detail"]["fields"]["new_password"] == "Choose a password you have not just used."
+
+
+def test_must_change_blocks_api_until_changed():
+    email = make_user()
+    c = signin(email)
+    _flag(email)
+    assert c.get("/api/auth/me").json()["must_change_password"] is True
+    for path in ("/api/assessments", "/api/catalog", "/api/dashboard"):
+        r = c.get(path)
+        assert (r.status_code, r.json()["detail"]) == (403, "Change your temporary password to continue.")
+    assert c.post("/api/auth/password", json={"current_password": PW, "new_password": "a brand new pass"}).status_code == 200
+    assert c.get("/api/assessments").status_code == 200
+
+
+def test_must_change_blocks_admin_routes():
+    email = make_user("admin")
+    c = signin(email)
+    _flag(email)
+    assert c.get("/api/admin/users").status_code == 403
+
+
+def test_created_users_must_change_password():
+    from app.cli import create_admin
+    c = signin(make_user("admin"))
+    uid = c.post("/api/admin/users", json={"name": "N", "email": "flag@example.test", "role": "owner"}).json()["user"]["id"]
+    create_admin("cli-flag@example.test", "Cli")
+    with SessionLocal() as db:
+        assert db.query(User).filter_by(display_id=uid).one().must_change_password is True
+        assert db.query(User).filter_by(email="cli-flag@example.test").one().must_change_password is True

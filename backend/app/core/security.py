@@ -128,10 +128,17 @@ def current_session(request: Request, db=Depends(get_db)) -> Session:
     return sess
 
 
-def current_user(sess=Depends(current_session), db=Depends(get_db)) -> User:
+def signed_in_user(sess=Depends(current_session), db=Depends(get_db)) -> User:
+    """Used only by /auth/* so a user with a temporary password can still reach them."""
     user = db.get(User, sess.user_id)
     if not user or user.status != "active":
         raise HTTPException(401, "Sign in to continue.")
+    return user
+
+
+def current_user(user=Depends(signed_in_user)) -> User:
+    if user.must_change_password:
+        raise HTTPException(403, "Change your temporary password to continue.")
     return user
 
 

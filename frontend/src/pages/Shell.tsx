@@ -14,7 +14,7 @@ interface NavGroup { title?: string; items: NavItem[] }
 const ROLE_LABEL = { owner: 'Assessment Owner', admin: 'Platform Administrator' } as const;
 
 const CRUMBS: Record<string, string> = {
-  '/dashboard': 'Dashboard', '/assessments': 'My Assessments', '/queue': 'Scan Queue', '/help': 'Help & Safety Guidance',
+  '/dashboard': 'Dashboard', '/assessments': 'My Assessments', '/queue': 'Scan Queue', '/help': 'Help & Safety Guidance', '/account': 'Change password',
   '/admin/users': 'Users & Roles', '/admin/jobs': 'Assessments / Jobs', '/admin/capacity': 'Scan Capacity & Scheduling', '/admin/audit': 'Audit Logs',
 };
 
@@ -36,16 +36,18 @@ export function Shell() {
   const [theme, setTheme] = useTheme();
   const [dash, setDash] = useState<Dashboard | null>(null);
   const admin = user!.role === 'admin';
+  const forced = user!.must_change_password;
 
   useEffect(() => {
-    api<Dashboard>('/dashboard').then(setDash).catch(() => setDash(null)); // counts and alert bar are optional chrome
-  }, [pathname]);
+    if (!forced) api<Dashboard>('/dashboard').then(setDash).catch(() => setDash(null)); // counts and alert bar are optional chrome
+  }, [pathname, forced]);
 
   const mine: NavItem[] = [
     { to: '/dashboard', label: 'Dashboard', icon: 'home' },
     { to: '/assessments', label: 'My Assessments', icon: 'folder', count: dash?.counts.assessments },
     { to: '/queue', label: 'Scan Queue', icon: 'queue', count: dash?.counts.active_jobs },
   ];
+  const password: NavItem = { to: '/account/password', label: 'Change password', icon: 'shield' };
   const help: NavItem = { to: '/help', label: 'Help & Safety Guidance', icon: 'book' };
   const groups: NavGroup[] = admin
     ? [
@@ -57,16 +59,16 @@ export function Shell() {
           { to: '/admin/audit', label: 'Audit Logs', icon: 'doc' },
         ] },
         { title: 'My testing', items: mine },
-        { title: 'Account', items: [help] },
+        { title: 'Account', items: [password, help] },
       ]
-    : [{ items: mine }, { title: 'Account', items: [help] }];
+    : [{ items: mine }, { title: 'Account', items: [password, help] }];
 
   const blocked = dash?.capacity.blocked_reason;
   const crumbs = breadcrumbs(pathname);
 
   return (
-    <div className="shell">
-      <aside className="sidebar">
+    <div className={`shell${forced ? ' shell-forced' : ''}`}>
+      {!forced && <aside className="sidebar">
         <div className="brand">
           <strong>Pre-Assessment Console</strong>
           <span>{admin ? 'Admin console' : 'Web & API security pre-assessment'}</span>
@@ -92,7 +94,7 @@ export function Shell() {
         <p className="sidebar-foot">
           {admin ? 'Admin actions are recorded in the audit log.' : 'Pre-assessment aid only — not a penetration test, certificate or clearance.'}
         </p>
-      </aside>
+      </aside>}
       <div className="main-col">
         <header className="topbar">
           <nav aria-label="Breadcrumb" className="crumbs">

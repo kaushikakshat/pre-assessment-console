@@ -16,7 +16,7 @@ def create_admin(email, name):
         if db.scalar(select(User).where(func.lower(User.email) == email)):
             raise SystemExit("A user with that email already exists.")
         db.add(User(email=email, name=name, role="admin", status="active",
-                    password_hash=PasswordHasher().hash(temp)))
+                    password_hash=PasswordHasher().hash(temp), must_change_password=True))
         record(db, "cli", "users", "create-admin", email, "success", "Administrator created via CLI")
     print(f"Temporary password for {email}: {temp}\nMFA enrolment is required on first sign-in.")
 

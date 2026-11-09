@@ -50,7 +50,7 @@ def create_user(body: CreateIn, admin=Depends(sec.require_admin), db=Depends(get
         raise HTTPException(409, "A user with that email already exists.")
     temp = secrets.token_urlsafe(12)
     u = User(name=body.name.strip(), email=email, role=body.role, team=body.team, status="active",
-             password_hash=sec.hash_password(temp))
+             password_hash=sec.hash_password(temp), must_change_password=True)
     db.add(u)
     try:
         db.flush()

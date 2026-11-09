@@ -37,7 +37,7 @@ export interface User {
   id: string; name: string; email: string; role: Role; team: string | null;
   status: 'active' | 'deactivated'; mfa: 'enrolled' | 'pending'; last_login_at: string | null; sessions: number;
 }
-export interface Me { id: string; name: string; email: string; role: Role; team: string | null }
+export interface Me { id: string; name: string; email: string; role: Role; team: string | null; must_change_password: boolean }
 export interface Check { key: CheckKey; label: string; result: CheckResult; detail: string }
 export interface Validation { outcome: ValidationOutcome; checks: Check[]; normalized_target: string; policy_version: string; decided_at: string }
 export interface Approval { state: 'pending' | 'approved' | 'refused'; note: string | null; by: string | null; at: string | null; self: boolean }
