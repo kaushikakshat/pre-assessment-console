@@ -4,7 +4,7 @@ import type { Severity, Confidence } from './types';
 
 export type Tone = 'ok' | 'warn' | 'danger' | 'neutral' | 'info';
 export interface StatusDef { label: string; tone: Tone; icon: IconName }
-export type StatusKind = 'job' | 'module' | 'finding' | 'validation' | 'assessment' | 'check' | 'worker';
+export type StatusKind = 'job' | 'module' | 'finding' | 'validation' | 'assessment' | 'check' | 'worker' | 'report';
 
 const d = (label: string, tone: Tone, icon: IconName): StatusDef => ({ label, tone, icon });
 
@@ -61,6 +61,11 @@ export const VOCAB: Record<StatusKind, Record<string, StatusDef>> = {
     warn: d('Warning', 'warn', 'warn'),
     fail: d('Fail', 'danger', 'x'),
     skip: d('Skipped', 'neutral', 'skip'),
+  },
+  report: {
+    ready: d('Ready', 'ok', 'check'),
+    generating: d('Generating', 'info', 'spin'),
+    failed: d('Failed', 'danger', 'x'),
   },
   worker: {
     healthy: d('Healthy', 'ok', 'check'),

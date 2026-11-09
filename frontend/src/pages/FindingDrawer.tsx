@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { api, ApiError } from '../lib/api';
 import {
-  Banner, Button, ConfirmDialog, ConfidenceTag, Drawer, EvidenceBlock, LoadError, Loading, LocationList, ReasonConfirm, SeverityBadge,
+  Banner, Button, ConfirmDialog, ConfidenceTag, Drawer, EvidenceBlock, retestable, LoadError, Loading, LocationList, ReasonConfirm, SeverityBadge,
   StatusBadge, Textarea, Timeline, useToast,
 } from '../components';
 import { can, type AccessLevel } from '../lib/perm';
@@ -19,8 +19,8 @@ export const ACTIONS: { action: StateAction; label: string; from: FindingState[]
   { action: 'reopen', label: 'Reopen', from: ['false-positive', 'accepted-risk', 'resolved'], reason: true },
 ];
 
-export function FindingDrawer({ id, access, ownerName, moduleName, onClose, onChanged }: {
-  id: string; access: AccessLevel; ownerName: string; moduleName: (k: string) => string; onClose: () => void; onChanged: () => void;
+export function FindingDrawer({ id, access, ownerName, moduleName, onClose, onChanged, onRetest }: {
+  onRetest?: (f: FindingDetail) => void; id: string; access: AccessLevel; ownerName: string; moduleName: (k: string) => string; onClose: () => void; onChanged: () => void;
 }) {
   const { data, error, reload } = useLoad<FindingDetail>(`/findings/${id}`);
   const [pending, setPending] = useState<(typeof ACTIONS)[number] | null>(null);
@@ -50,7 +50,10 @@ export function FindingDrawer({ id, access, ownerName, moduleName, onClose, onCh
       open title={d?.title ?? `Finding ${id}`} onClose={onClose}
       badges={d && <><SeverityBadge severity={d.severity} /><ConfidenceTag confidence={d.confidence} /><StatusBadge kind="finding" status={d.state} /><span className="mono">{d.id}</span></>}
       footer={d && (can(access, 'change-finding-state')
-        ? ACTIONS.filter((a) => a.from.includes(d.state)).map((a) => <Button key={a.action} onClick={() => setPending(a)}>{a.label}</Button>)
+        ? <>
+          {ACTIONS.filter((a) => a.from.includes(d.state)).map((a) => <Button key={a.action} onClick={() => setPending(a)}>{a.label}</Button>)}
+          {onRetest && retestable(d) && <Button variant="primary" onClick={() => onRetest(d)}>Request retest</Button>}
+        </>
         : <span className="muted">{`Administrator view. Only the owner, ${ownerName}, can change this finding.`}</span>)}
     >
       {error && !d && <LoadError error={error} thing={`finding ${id}`} onRetry={reload} />}

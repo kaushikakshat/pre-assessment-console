@@ -54,7 +54,7 @@ export interface AssessmentSummary {
 }
 export interface ModuleRun { key: ModuleKey; name: string; state: ModuleState; detail: string | null; started_at: string | null; ended_at: string | null }
 export interface Job {
-  id: string; seq: number; assessment_id: string; assessment_name: string; type: 'scan'; profile: ProfileKey | null;
+  id: string; seq: number; assessment_id: string; assessment_name: string; type: 'scan' | 'retest'; retest_of?: string | null; profile: ProfileKey | null;
   priority: Priority; state: JobState; submitted_at: string; started_at: string | null; ended_at: string | null;
   policy_version: string; requested_by: string; note: string | null; resume_of: string | null;
   review: 'resumed' | 'rerun-advised' | 'closed' | null; modules: ModuleRun[];
@@ -102,3 +102,20 @@ export interface SigninSetup {
 export interface TestAccount { id: string; role_label: string; username_hint: string; last_test: 'ok' | 'failed' | null; last_tested_at: string | null }
 export interface SigninState { setup: SigninSetup | null; accounts: TestAccount[] }
 export interface Wordlist { key: string; category: 'discovery' | 'fuzzing'; label: string; lines: number }
+
+export type ReportType = 'management' | 'technical';
+export type ReportState = 'generating' | 'ready' | 'failed';
+// Contract from backend Task 11 (docs/API.md not yet extended).
+export interface Report { id: string; assessment_id: string; job_id: string; type: ReportType; version: number; state: ReportState; created_at: string; requested_by: string }
+export interface ReportModel {
+  header?: { product: string; classification: string };
+  title?: { assessment: string; type: string; report_id: string; version: number; generated_at: string; by: string };
+  watermark?: string;
+  scope?: Record<string, unknown>;
+  categories?: { key: string; label: string; count: number }[];
+  modules?: { key: string; name: string; state: string; detail: string | null; untested?: number }[];
+  summary?: unknown;
+  findings_overview?: Record<string, unknown>[];
+  details?: Record<string, unknown>[];
+  limitations?: string;
+}
