@@ -131,6 +131,12 @@ MFA (TOTP) is required for every role, one prompt per sign-in.
 | PUT `/admin/wordlists` | `{key, enabled, reason}` | the updated wordlist. 422 empty reason · 404 unknown key. Audited (area `capacity`) |
 | PUT `/admin/capacity` | `{limit, aging_enabled, aging_minutes, queue_cap, per_user_quota, engine_slots?: 1–3, profile_limits?: {pre?, deep?: {budget_min: 5–600, request_cap: 100–200000, rate_per_s: 1–50}}, reason}` (unnamed profiles keep their limits; changes audited) | same as GET. 422 `"Only {n} healthy worker is available. Enable or provision more workers before raising the limit to {x}."` when limit > healthy workers; limit range 1–3. 422 `"Only one scanning engine is provisioned."` when `engine_slots` > 1 (one ZAP and one egress scope are provisioned) |
 | POST `/admin/workers/{id}` | `{action: 'enable'|'drain', reason}` | `Worker[]` |
+| GET `/admin/policies` | – | `{published: PolicyVersion, draft: PolicyDraft|null, invariants: string[]}`; `PolicyVersion` = `{version, status, document, note, published_at, published_by, rules, used_by}` |
+| POST `/admin/policies/draft` | `{}` | 201 `PolicyDraft` = `{version, status, document, note, rev, created_by, created_at, stage: 'draft'|'validated'|'dry-run', checks|null, dry_run|null}`, copied from the published policy. 409 "A draft is already open." |
+| PUT `/admin/policies/draft` | `{document, note ≤500, rev}` | `PolicyDraft`; bumps `rev`, clears checks and dry run. 409 "Someone else changed this draft. Reload to see their changes." on stale `rev` · 422 `{detail, errors[]}` on schema errors |
+| POST `/admin/policies/draft/import` | `{text ≤262144 chars, rev}` | `PolicyDraft` (keeps the note). 422 `{detail, errors[]}` for bad JSON, non-object, >500 rules or schema errors; 409 on stale `rev` |
+| DELETE `/admin/policies/draft` | – | 204; 404 when no draft |
+| POST `/admin/policies/draft/validate` | – | `PolicyDraft` with `checks` stored; `stage` becomes `validated` when no check fails |
 | GET `/admin/audit?q=&area=&actor=&outcome=` | – | `AuditEvent[]` newest first, capped at 500. Always sends `X-Total-Count` (all matches); `X-Truncated: true` when capped |
 | GET `/admin/audit.csv?…` | – | `text/csv`, all matching rows (no cap); the export itself is audited |
 

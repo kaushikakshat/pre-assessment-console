@@ -6,7 +6,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.core.startup import validate_env
-from app.api import admin, admin_users, assessments, auth, catalog, dashboard, findings, jobs, reports, retest, signin
+from app.api import admin, admin_users, assessments, auth, catalog, dashboard, findings, jobs, policies, reports, retest, signin
 
 
 @asynccontextmanager
@@ -52,6 +52,7 @@ def health():
 
 app.include_router(auth.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
+app.include_router(policies.router, prefix="/api")
 app.include_router(admin_users.router, prefix="/api")
 app.include_router(assessments.router, prefix="/api")
 app.include_router(catalog.router, prefix="/api")
