@@ -202,8 +202,9 @@ def test_publish_resets_stricter_and_cancels_queued_only(adm, monkeypatch):
         v = dict(c.execute(text("SELECT version, status FROM policy_versions")).all())
         pub = c.execute(text("SELECT published_at FROM policy_versions WHERE version='v2'")).scalar()
     assert states[q] == "cancelled" and states[run] == "running" and v == {"v1": "superseded", "v2": "published"} and pub
-    acts = {e["action"] for e in adm.get("/api/admin/audit").json()}
-    assert {"publish", "policy-reset"} <= acts
+    acts = {e["action"] for e in adm.get("/api/admin/audit?area=policy").json()}
+    assert {"dry-run", "publish"} <= acts
+    assert "policy-reset" in {e["action"] for e in adm.get("/api/admin/audit?area=validation").json()}
 
 
 def test_publish_keeps_approved_when_not_stricter(adm, monkeypatch):

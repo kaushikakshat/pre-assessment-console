@@ -184,13 +184,23 @@ def _lookup(host):
         return None
 
 
-def outcomes(db, published_doc, draft_doc, app_env) -> list[dict]:
-    """Re-evaluate every validated assessment under both documents; DNS only, never any HTTP."""
+def resolve_hosts(db, hosts=None) -> dict:
+    """host -> addresses (None when unresolvable). Defaults to every validated assessment's host; call outside row locks."""
+    if hosts is None:
+        hosts = [a.target for a in db.scalars(select(Assessment).where(VALIDATED))]
+        hosts = [_host(t) for t in hosts]
+    hosts = sorted({h for h in hosts if h})
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        return dict(zip(hosts, ex.map(_lookup, hosts)))
+
+
+def outcomes(db, published_doc, draft_doc, app_env, resolved=None) -> list[dict]:
+    """Re-evaluate every validated assessment under both documents; DNS only, never any HTTP.
+    `resolved` is a pre-resolved host map; hosts missing from it are resolved here."""
     rows = db.execute(select(Assessment, User.name).join(User, User.id == Assessment.owner_id)
                       .where(VALIDATED).order_by(Assessment.id)).all()
-    hosts = sorted({h for a, _ in rows if (h := _host(a.target))})
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        addrs = dict(zip(hosts, ex.map(_lookup, hosts)))
+    addrs = dict(resolved or {})
+    addrs.update(resolve_hosts(db, [_host(a.target) for a, _ in rows if _host(a.target) not in addrs]))
     out = []
     for a, owner in rows:
         ad = addrs.get(_host(a.target))
@@ -205,15 +215,17 @@ def outcomes(db, published_doc, draft_doc, app_env) -> list[dict]:
 
 def apply_publish(db, new_doc, label, actor, note, draft=None) -> dict:
     """One transaction: supersede, publish, reset stricter assessments, cancel their queued scans.
-    Lock order: policy rows, assessments by id, then jobs by id."""
-    old = published(db, lock=True)
+    Lock order: draft row, assessments by id, published row, then jobs by id. validate locks an assessment and then
+    reads the published row FOR SHARE, so the published row must come after the assessments. DNS runs before any lock."""
+    resolved = resolve_hosts(db)
     if draft is not None:
         db.execute(select(PolicyVersion).where(PolicyVersion.version == draft.version).with_for_update()
                    .execution_options(populate_existing=True))
     locked = {a.display_id: a for a in db.scalars(
         select(Assessment).where(VALIDATED).order_by(Assessment.id).with_for_update()
         .execution_options(populate_existing=True))}
-    rows = outcomes(db, old.rules, new_doc, os.environ.get("APP_ENV", "prod"))
+    old = published(db, lock=True)
+    rows = outcomes(db, old.rules, new_doc, os.environ.get("APP_ENV", "prod"), resolved)
     old.status = "superseded"
     db.flush()  # free the 'published' slot before the new row takes it
     if draft is None:
@@ -251,7 +263,7 @@ def dry_run(admin=Depends(sec.require_admin), db=Depends(get_db)):
     rows = outcomes(db, published(db).rules, pv.rules, os.environ.get("APP_ENV", "prod"))
     pv.dry_run = {"hash": content_hash(pv.rules), "at": datetime.now(timezone.utc).isoformat(), "rows": rows,
                   "changed": sum(r["changed"] for r in rows), "resets": sum(r["reset"] for r in rows)}
-    record(db, admin.email, "policy", "draft-dry-run", pv.version, "success",
+    record(db, admin.email, "policy", "dry-run", pv.version, "success",
            f"{pv.dry_run['changed']} targets change, {pv.dry_run['resets']} would need re-validation")
     db.commit()
     return draft_shape(pv)
@@ -259,7 +271,6 @@ def dry_run(admin=Depends(sec.require_admin), db=Depends(get_db)):
 
 @router.post("/draft/publish")
 def publish(body: PublishIn, admin=Depends(sec.require_admin), db=Depends(get_db)):
-    published(db, lock=True)  # policy rows lock in published-then-draft order
     pv = locked_draft(db)
     if pv.rev != body.rev:
         raise HTTPException(409, STALE)
@@ -288,7 +299,7 @@ def rollback(v: str, body: RollbackIn, admin=Depends(sec.require_admin), db=Depe
     reason = body.reason.strip()
     if not reason:
         raise HTTPException(422, "Give a reason for the rollback.")
-    cur = published(db, lock=True)
+    cur = published(db)  # unlocked: apply_publish takes the published row lock after the assessments
     if db.scalar(select(PolicyVersion.version).where(PolicyVersion.status == "draft")):
         raise HTTPException(409, "Discard or publish the open draft first.")
     pv = db.get(PolicyVersion, v)
