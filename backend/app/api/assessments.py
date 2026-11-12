@@ -12,10 +12,10 @@ from app.core.audit import record
 from app.db import get_db
 from app.models import Assessment, AuditEvent, Finding, Job, PolicyVersion, User
 from app.targets import ipguard
+from app.targets.policy import ENVS
 from app.targets.validate import parse_ports, parse_target, validate_target
 
 router = APIRouter(prefix="/assessments")
-ENVS = ("Development", "Staging", "UAT", "Production")
 ACTIVE_JOB = ("queued", "validating", "scheduled", "running", "cancelling")
 NEEDS_ACTION = ("new", "open", "under-review", "reopened")
 STATUS = {"allowed": "active", "approval": "awaiting-approval", "blocked": "blocked"}

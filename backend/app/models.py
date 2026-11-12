@@ -57,9 +57,15 @@ class PolicyVersion(Base):
     __tablename__ = "policy_versions"
     version: Mapped[str] = mapped_column(Text, primary_key=True)
     rules: Mapped[dict] = mapped_column(JSONB)
-    published_at: Mapped[datetime] = _ts(server_default=NOW)
+    published_at: Mapped[datetime | None] = _ts(nullable=True)
     published_by: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text, server_default="published")
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _ts(server_default=NOW)
+    rev: Mapped[int] = mapped_column(Integer, server_default="0")
+    dry_run: Mapped[dict | None] = mapped_column(JSONB)
+    validation: Mapped[dict | None] = mapped_column(JSONB)
 
 
 class Assessment(Base):
