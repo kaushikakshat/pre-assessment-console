@@ -48,3 +48,12 @@ def test_evaluate_outcome():
     assert evaluate_outcome("https://ok.com:9999/", "Staging", "", pol, ["93.184.216.34"], "prod") == "blocked"
     assert evaluate_outcome("https://ok.com/", "Staging", "", pol, ["127.0.0.1"], "prod") == "blocked"
     assert evaluate_outcome("https://ok.com/", "Staging", "", pol, None, "prod") == "unresolved"
+
+def test_non_string_rule_id_is_a_schema_error():
+    for bad in ([], {}):
+        assert any("ID" in e for e in schema_errors(doc({**r("R-01"), "id": bad})))
+
+def test_evaluate_outcome_ports_field_matches_validator():
+    pol = doc(r("R-01"), permitted_ports=[80, 443, 8443])
+    ev = lambda f: evaluate_outcome("https://x.example.com/", "Staging", f, pol, ["93.184.216.34"], "prod")
+    assert ev("8443") == "allowed" and ev("9999") == "blocked" and ev("abc") == "blocked"

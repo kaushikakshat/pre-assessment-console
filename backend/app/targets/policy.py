@@ -74,7 +74,8 @@ def schema_errors(doc) -> list[str]:
             errs.append(f"{t}: ID must look like R-01")
         elif r["id"] in seen:
             errs.append(f"{t}: Duplicate rule ID")
-        seen.add(r.get("id"))
+        else:
+            seen.add(r["id"])
         if r.get("outcome") not in ("allow", "approval", "deny"):
             errs.append(f"{t}: outcome must be allow, approval or deny")
         if r.get("match") not in _MATCHES:
@@ -166,7 +167,7 @@ def evaluate_outcome(target, env, ports_field, policy, addrs, app_env) -> str:
     if _check_addrs(addrs, _internal(rule, app_env, addrs) is not False)[0] == "fail":
         return "blocked"
     try:
-        wanted = {p.effective_port, *(parse_ports(ports_field) if (ports_field or "").strip() else [])}
+        wanted = {p.effective_port, *(parse_ports(ports_field) if (ports_field or "").strip() else [])  # create defaults empty to the scheme port}
     except ValueError:
         return "blocked"
     if wanted - set(policy.get("permitted_ports", [])):
