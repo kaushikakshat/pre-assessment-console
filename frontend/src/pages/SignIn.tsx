@@ -1,5 +1,6 @@
 import { useRef, useState, type ClipboardEvent, type FormEvent, type KeyboardEvent } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
+import QRCode from 'qrcode';
 import { api, ApiError } from '../lib/api';
 import type { LoginResult, Me } from '../lib/types';
 import { landingFor, useAuth } from '../auth/AuthContext';
@@ -53,7 +54,7 @@ export function SignIn() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
-  const [enrol, setEnrol] = useState<{ secret: string; uri: string } | null>(null);
+  const [enrol, setEnrol] = useState<{ secret: string; uri: string; qr: string } | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -69,7 +70,10 @@ export function SignIn() {
     void run(async () => {
       const r = await api<LoginResult>('/auth/login', { method: 'POST', body: { email, password } });
       setPassword('');
-      if (r.next === 'enrol') setEnrol({ secret: r.secret, uri: r.otpauth_uri });
+      if (r.next === 'enrol') {
+        const qr = await QRCode.toDataURL(r.otpauth_uri, { margin: 1, width: 200 }).catch(() => ''); // setup key below still works without it
+        setEnrol({ secret: r.secret, uri: r.otpauth_uri, qr });
+      }
       setStep(r.next);
     });
   };
@@ -102,7 +106,8 @@ export function SignIn() {
           <form onSubmit={submitCode} className="stack">
             {step === 'enrol' && enrol ? (
               <>
-                <p>Set up two-step verification. Add this key to your authenticator app, then enter the first code it shows.</p>
+                <p>Set up two-step verification. Scan this QR code with your authenticator app (or type the key below), then enter the first code it shows.</p>
+                {enrol.qr && <img className="qr" src={enrol.qr} width={200} height={200} alt="QR code for your authenticator app. If you cannot scan it, type the setup key below." />}
                 <p className="mono secret" aria-label="Setup key">{group4(enrol.secret)}</p>
                 <details>
                   <summary>Show the otpauth link</summary>
