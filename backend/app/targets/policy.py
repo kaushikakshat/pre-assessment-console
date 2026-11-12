@@ -49,6 +49,13 @@ def _value_error(match, value):
     return None
 
 
+def canonical(doc):
+    """Copy of a schema-valid doc with domain/suffix values in the form the matcher compares against."""
+    rules = [{**r, "value": ipguard.normalize_host(r["value"].strip().lstrip("."))} if r["match"] in ("domain", "suffix") else r
+             for r in doc["rules"]]
+    return {**doc, "rules": rules}
+
+
 def _tag(i, r):
     return f"rules[{i}] ({r.get('id')})"
 
@@ -80,8 +87,13 @@ def schema_errors(doc) -> list[str]:
             errs.append(f"{t}: outcome must be allow, approval or deny")
         if r.get("match") not in _MATCHES:
             errs.append(f"{t}: match must be one of {', '.join(_MATCHES)}")
+        elif not isinstance(r.get("value", ""), str):
+            errs.append(f"{t}: value must be text")
         elif (e := _value_error(r["match"], r.get("value", ""))):
             errs.append(f"{t}: {e}")
+        if not isinstance(r.get("note", ""), str):
+            errs.append(f"{t}: note must be text")
+        errs += [f"{t}: {k} must be true or false" for k in ("internal", "dev_only") if not isinstance(r.get(k, False), bool)]
     return errs
 
 
@@ -161,8 +173,8 @@ def evaluate_outcome(target, env, ports_field, policy, addrs, app_env) -> str:
         p = parse_target(target)
     except ValueError:
         return "blocked"
-    if addrs is None:
-        return "unresolved"
+    unresolved = addrs is None
+    addrs = addrs or []  # DNS failure: ip/cidr rules cannot match, but deny rules and ports still apply
     rule = first_rule(policy, p.host, addrs, env)
     if _check_addrs(addrs, _internal(rule, app_env, addrs) is not False)[0] == "fail":
         return "blocked"
@@ -173,4 +185,4 @@ def evaluate_outcome(target, env, ports_field, policy, addrs, app_env) -> str:
     if wanted - set(policy.get("permitted_ports", [])):
         return "blocked"
     out = rule["outcome"] if rule else policy.get("no_match", "approval")
-    return {"deny": "blocked", "allow": "allowed"}.get(out, "approval")
+    return "blocked" if out == "deny" else "unresolved" if unresolved else {"allow": "allowed"}.get(out, "approval")

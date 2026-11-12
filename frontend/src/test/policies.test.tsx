@@ -128,6 +128,9 @@ it('diffPolicies: added, removed, changed, moved, ports, no-match', () => {
   expect(d.changed.map((x) => x.id)).toEqual(['R-01', 'R-02']); // R-01 value, R-02 moved
   expect(d.ports).toEqual({ added: [8080], removed: [80] });
   expect(d.noMatch).toEqual({ from: 'approval', to: 'deny' });
+  const top = diffPolicies(A, { ...A, rules: [r('R-09'), ...A.rules] });
+  expect(top.added.map((x) => x.id)).toEqual(['R-09']);
+  expect(top.changed).toEqual([]);
 });
 
 describe('policy versions page', () => {

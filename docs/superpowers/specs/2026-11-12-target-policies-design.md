@@ -18,7 +18,7 @@ Per-team policies, scheduled publishing, approval of policies by a second admin 
 
 ## Decided by the user
 
-- **On publish, stricter outcomes reset.** An assessment whose outcome gets stricter under the new version (Allowed → Needs approval or Blocked, Needs approval → Blocked) has its validation cleared and must re-validate before its next scan. Looser outcomes are left alone; the owner may re-validate. Running scans are not stopped.
+- **On publish, stricter outcomes reset.** An assessment whose outcome gets stricter under the new version (Allowed → Needs approval or Blocked, Needs approval → Blocked) has its validation cleared and must re-validate before its next scan. Looser outcomes are left alone; the owner may re-validate. Running scans stop at their next module, because the worker re-checks the assessment status.
 - Full §7.20 scope.
 
 ## Data (migration 0013)

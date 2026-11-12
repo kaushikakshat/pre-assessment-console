@@ -6,7 +6,7 @@ import { Button, Card, DataTable, LoadError, Loading, ReasonConfirm, Select, typ
 import { useAct } from './common';
 import { MATCH_LABEL, OUTCOME_LABEL, diffPolicies, type Rule, type VersionInfo } from './policyTypes';
 
-const describe = (r: Rule) => `${r.id}: ${OUTCOME_LABEL[r.outcome]}, ${MATCH_LABEL[r.match]} ${r.value}${r.note ? ` (${r.note})` : ''}`;
+const describe = (r: Rule) => `${r.id}: ${OUTCOME_LABEL[r.outcome]}, ${MATCH_LABEL[r.match]} ${r.value}${r.internal ? ', internal' : ''}${r.dev_only ? ', dev only' : ''}${r.note ? ` (${r.note})` : ''}`;
 const label = (v: string) => OUTCOME_LABEL[v] ?? v;
 
 export function PolicyVersions() {

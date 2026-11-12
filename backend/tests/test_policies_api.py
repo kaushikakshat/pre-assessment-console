@@ -258,3 +258,55 @@ def test_validate_racing_publish_is_refused(monkeypatch):
     monkeypatch.setattr(assessments, "validate_target", racing)
     r = o.post(f"/api/assessments/{aid}/validate")
     assert r.status_code == 409 and r.json()["detail"] == "The target policy changed while validating. Validate again."
+
+
+def test_dns_failure_under_deny_rule_resets(adm, monkeypatch):
+    dns(monkeypatch)
+    aid, uid = validated_assessment("allowed", host="gone.example.com")
+    q = add_job(aid, uid)
+    d = go(adm, rules=[rule(5, outcome="deny", match="suffix", value="example.com")]).json()
+    x = d["dry_run"]["rows"][0]
+    assert (x["draft"], x["changed"], x["reset"]) == ("blocked", True, True)
+    assert adm.post(P + "/draft/publish", json={"rev": 1}).json()["jobs_cancelled"] == 1
+    assert a_state(aid)[0] == "draft"
+    with engine.connect() as c:
+        assert c.execute(text("SELECT state FROM jobs WHERE id=:i"), {"i": q}).scalar() == "cancelled"
+
+
+def test_domain_values_are_canonicalised(adm, monkeypatch):
+    dns(monkeypatch)
+    validated_assessment("allowed")
+    d = go(adm, rules=[rule(5, outcome="deny", match="suffix", value="Example.COM."),
+                       rule(6, outcome="deny", match="domain", value="bücher.de")]).json()
+    assert [r["value"] for r in d["document"]["rules"]] == ["example.com", "xn--bcher-kva.de"]
+    assert d["dry_run"]["rows"][0]["draft"] == "blocked"
+
+
+def test_import_deep_json_is_422(adm):
+    adm.post(P + "/draft", json={})
+    assert adm.post(P + "/draft/import", json={"text": "[" * 200000, "rev": 0}).status_code == 422
+
+
+def test_publish_stale_rev_is_409(adm, monkeypatch):
+    dns(monkeypatch)
+    go(adm, no_match="allow")
+    assert adm.post(P + "/draft/publish", json={"rev": 0}).status_code == 409
+
+
+def test_rollback_refuses_failing_document_and_resets_stricter(adm, monkeypatch):
+    dns(monkeypatch)
+    bad = {"no_match": "approval", "permitted_ports": [], "rules": []}
+    with engine.begin() as c:
+        c.execute(text("INSERT INTO policy_versions(version, rules, status, note, created_by, rev) "
+                       "VALUES ('v0', CAST(:r AS jsonb), 'superseded', '', 'x', 0)"), {"r": json.dumps(bad)})
+    r = adm.post(P + "/versions/v0/rollback", json={"reason": "x"})
+    assert r.status_code == 422 and r.json()["errors"]
+    go(adm, rules=[rule(5, outcome="deny", match="domain", value="app.example.com")])
+    adm.post(P + "/draft/publish", json={"rev": 1})  # v2 denies the target
+    assert adm.post(P + "/versions/v1/rollback", json={"reason": "loosen"}).status_code == 200
+    aid, uid = validated_assessment("allowed")
+    q = add_job(aid, uid)
+    assert adm.post(P + "/versions/v2/rollback", json={"reason": "tighten"}).status_code == 200
+    assert a_state(aid)[0] == "draft"
+    with engine.connect() as c:
+        assert c.execute(text("SELECT state FROM jobs WHERE id=:i"), {"i": q}).scalar() == "cancelled"

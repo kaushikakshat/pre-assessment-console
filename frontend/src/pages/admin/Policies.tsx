@@ -81,7 +81,7 @@ export function Policies() {
             (r) => `${r.version} published. ${r.changed} targets changed, ${r.reset} reset, ${r.jobs_cancelled} queued scans cancelled.`);
           setConfirm(null); if (ok) reload();
         }}>
-        {`${dry?.changed ?? 0} targets change outcome. ${dry?.resets ?? 0} will need to be validated again and their queued scans cancelled. Running scans continue.`}
+        {`${dry?.changed ?? 0} targets change outcome. ${dry?.resets ?? 0} will need to be validated again and their queued scans cancelled. Running scans stop at their next step.`}
       </ConfirmDialog>
       <ConfirmDialog open={confirm === 'discard'} tone="danger" title={`Discard draft ${draft.version}?`} cancelLabel="Keep draft" confirmLabel="Discard draft" busy={act.busy}
         onCancel={() => setConfirm(null)}
@@ -93,7 +93,7 @@ export function Policies() {
 }
 
 const CheckItem = ({ c }: { c: Check }) => (
-  <li><Icon name={c.result === 'pass' ? 'check' : c.result === 'warn' ? 'warn' : 'x'} size={16} /><span>{c.label}</span><span className="muted">{c.detail}</span></li>
+  <li><Icon name={c.result === 'pass' ? 'check' : c.result === 'warn' ? 'warn' : 'x'} size={16} /><span className="sr-only">{{ pass: 'Pass', warn: 'Warning', fail: 'Fail' }[c.result]}</span><span>{c.label}</span><span className="muted">{c.detail}</span></li>
 );
 
 function Invariants({ items }: { items: string[] }) {

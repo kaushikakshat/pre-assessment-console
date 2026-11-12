@@ -57,3 +57,17 @@ def test_evaluate_outcome_ports_field_matches_validator():
     pol = doc(r("R-01"), permitted_ports=[80, 443, 8443])
     ev = lambda f: evaluate_outcome("https://x.example.com/", "Staging", f, pol, ["93.184.216.34"], "prod")
     assert ev("8443") == "allowed" and ev("9999") == "blocked" and ev("abc") == "blocked"
+
+def test_dns_failure_still_applies_deny_and_ports():
+    ev = lambda u, pol: evaluate_outcome(u, "Staging", "", pol, None, "prod")
+    assert ev("https://app.example.com/", doc(r("R-01", "deny"))) == "blocked"
+    assert ev("https://app.example.com/", doc(r("R-01", "deny", "cidr", "10.0.0.0/8"))) == "unresolved"
+    assert ev("https://app.example.com:9999/", doc()) == "blocked"
+    assert ev("https://app.example.com/", doc(r("R-01"))) == "unresolved"
+
+def test_schema_field_types():
+    for bad, msg in [(r("R-01", note={"a": 1}), "note must be text"), (r("R-01", value=5), "value must be text"),
+                     (r("R-01", internal="yes"), "internal must be true or false")]:
+        assert any(msg in e for e in schema_errors(doc(bad))), msg
+    ok = r("R-01"); del ok["note"]
+    assert schema_errors(doc(ok, r("R-02", value="b.example.com", note="", internal=True, dev_only=False))) == []

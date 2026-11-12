@@ -16,7 +16,7 @@ from app.core.audit import record
 from app.db import get_db
 from app.models import Assessment, Job, PolicyVersion, User
 from app.targets import ipguard
-from app.targets.policy import INVARIANTS, RANK, check_policy, content_hash, evaluate_outcome, schema_errors
+from app.targets.policy import INVARIANTS, RANK, canonical, check_policy, content_hash, evaluate_outcome, schema_errors
 from app.targets.validate import parse_target
 
 router = APIRouter(prefix="/admin/policies", dependencies=[Depends(sec.require_admin)])
@@ -97,7 +97,7 @@ def replace(db, admin, doc, rev, action, note=None):
         errs = [f"A policy can have at most {MAX_RULES} rules"]
     if errs:
         return invalid(errs)
-    pv.rules, pv.rev, pv.validation, pv.dry_run = doc, pv.rev + 1, None, None
+    pv.rules, pv.rev, pv.validation, pv.dry_run = canonical(doc), pv.rev + 1, None, None
     if note is not None:
         pv.note = note
     record(db, admin.email, "policy", action, pv.version, "success", f"rev {pv.rev}, {len(doc['rules'])} rules")
@@ -136,7 +136,7 @@ def save(body: SaveIn, admin=Depends(sec.require_admin), db=Depends(get_db)):
 def import_doc(body: ImportIn, admin=Depends(sec.require_admin), db=Depends(get_db)):
     try:
         doc = json.loads(body.text)
-    except ValueError:
+    except (ValueError, RecursionError):
         return invalid(["The text is not valid JSON"])
     return replace(db, admin, doc, body.rev, "draft-import")
 
@@ -208,7 +208,7 @@ def outcomes(db, published_doc, draft_doc, app_env, resolved=None) -> list[dict]
         new = evaluate_outcome(a.target, a.env, a.ports, draft_doc, ad, app_env)
         stored = a.validation["outcome"]
         out.append({"assessment": a.display_id, "name": a.name, "target": a.target, "env": a.env, "owner": owner,
-                    "stored": stored, "published": pub, "draft": new, "changed": pub != new,
+                    "stored": stored, "published": pub, "draft": new, "changed": pub != new or new == "unresolved",
                     "reset": new in RANK and RANK[new] > RANK[stored]})
     return out
 
@@ -226,6 +226,9 @@ def apply_publish(db, new_doc, label, actor, note, draft=None) -> dict:
         .execution_options(populate_existing=True))}
     old = published(db, lock=True)
     rows = outcomes(db, old.rules, new_doc, os.environ.get("APP_ENV", "prod"), resolved)
+    if any(r["reset"] and r["assessment"] not in locked for r in rows):
+        db.rollback()
+        raise HTTPException(409, "A target was validated while publishing. Publish again.")
     old.status = "superseded"
     db.flush()  # free the 'published' slot before the new row takes it
     if draft is None:
@@ -307,4 +310,6 @@ def rollback(v: str, body: RollbackIn, admin=Depends(sec.require_admin), db=Depe
         raise HTTPException(404, "Not found.")
     if pv.version == cur.version:
         raise HTTPException(409, "This version is already in force.")
+    if fails := [c["detail"] for c in check_policy(pv.rules) if c["result"] == "fail"]:
+        return invalid(fails)
     return apply_publish(db, pv.rules, next_label(db), admin.email, f"Rollback to {v}: {reason}")
