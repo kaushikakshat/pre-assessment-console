@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { api } from '../../lib/api';
 import { useLoad } from '../../lib/useLoad';
-import { Banner, Button, Card, Checkbox, ConfirmDialog, DataTable, Icon, LoadError, Loading, Modal, Select, Stepper, Tabs, TbdMarker, TextField, Textarea, type Column } from '../../components';
+import { Banner, Button, Card, Checkbox, ConfirmDialog, DataTable, Icon, LoadError, Loading, Modal, Select, Stepper, StatusBadge, Tabs, TbdMarker, TextField, Textarea, type Column } from '../../components';
 import { useAct } from './common';
 import { MATCH_LABEL, OUTCOME_LABEL, nextRuleId, stageIndex, type Check, type Draft, type DryRow, type Match, type Outcome, type PolicyDoc, type Rule, type VersionInfo } from './policyTypes';
 
@@ -26,7 +26,7 @@ export function Policies() {
 
   const run = async (fn: () => Promise<unknown>, ok: string) => { if (await act.run(fn, ok)) reload(); };
   const failed = act.failure && (
-    <Banner tone="danger" title="Not saved" action={act.error?.status === 409 && <Button size="sm" onClick={() => { act.clear(); reload(); }}>Reload</Button>}>
+    <Banner tone="danger" title="Action failed" action={act.error?.status === 409 && <Button size="sm" onClick={() => { act.clear(); reload(); }}>Reload</Button>}>
       {act.failure}
       {act.error?.errors && <ul>{act.error.errors.map((e) => <li key={e}>{e}</li>)}</ul>}
     </Banner>
@@ -104,8 +104,8 @@ function DryTable({ rows }: { rows: DryRow[] }) {
     { key: 'n', header: 'Assessment', render: (r) => <><b>{r.name}</b><div className="muted">{r.owner}</div></> },
     { key: 't', header: 'Target', mono: true, render: (r) => r.target },
     { key: 'e', header: 'Environment', render: (r) => r.env },
-    { key: 'p', header: 'Published', render: (r) => <Outcomes v={r.published} /> },
-    { key: 'd', header: 'Draft', render: (r) => <Outcomes v={r.draft} /> },
+    { key: 'p', header: 'Published', render: (r) => <StatusBadge kind="validation" status={r.published} /> },
+    { key: 'd', header: 'Draft', render: (r) => <StatusBadge kind="validation" status={r.draft} /> },
     { key: 's', header: 'Effect', render: (r) => (r.reset ? 'Needs validation again' : r.changed ? 'Changes' : 'No change') },
   ];
   return <DataTable caption="Dry run results" columns={cols} rows={rows} rowKey={(r) => r.assessment} rowClass={(r) => (r.changed ? 'row-changed' : '')} empty={{ title: 'No assessments to check' }} />;
@@ -179,7 +179,6 @@ function RuleModal({ rule, isNew, onClose, onSave }: { rule: Rule; isNew: boolea
     const { internal, ...rest } = r;
     const out: Rule = { ...rest, value: r.value.trim() };
     if (privateOk && internal) out.internal = true;
-    if (!r.dev_only) delete out.dev_only;
     onSave(out);
   };
   return (
@@ -195,7 +194,6 @@ function RuleModal({ rule, isNew, onClose, onSave }: { rule: Rule; isNew: boolea
         <TextField id="r-value" label="Value" required mono hint={HINT[r.match]} value={r.value} onChange={(e) => set({ value: e.target.value })} />
         <TextField id="r-note" label="Note" value={r.note} onChange={(e) => set({ note: e.target.value })} />
         {privateOk && <Checkbox label="Allow private addresses" checked={!!r.internal} onChange={(e) => set({ internal: e.target.checked })} />}
-        <Checkbox label="Dev only" checked={!!r.dev_only} onChange={(e) => set({ dev_only: e.target.checked })} />
       </div>
     </Modal>
   );

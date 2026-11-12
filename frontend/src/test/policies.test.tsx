@@ -91,13 +91,15 @@ it('FastAPI list-style 422 does not crash', async () => {
 });
 
 it('dry run: changed rows highlighted; publish shows counts and posts rev', async () => {
-  const row = (a: string, changed: boolean) => ({ assessment: a, name: a, target: 'https://x', env: 'Staging', owner: 'O', stored: 'allow', published: 'allow', draft: 'deny', changed, reset: changed });
+  const row = (a: string, changed: boolean) => ({ assessment: a, name: a, target: 'https://x', env: 'Staging', owner: 'O', stored: 'allowed', published: 'allowed', draft: 'blocked', changed, reset: changed });
   const d = draft({ stage: 'dry-run', checks: [], dry_run: { at: 'now', rows: [row('A-1', true), row('A-2', false)], changed: 1, resets: 1 } });
   const calls = mockApi({ '/admin/policies': { published, draft: d, invariants: inv }, 'POST /admin/policies/draft/publish': json(200, { version: 'v2', changed: 1, reset: 1, jobs_cancelled: 2 }) });
   const user = userEvent.setup();
   mount('/admin/policies');
   const r1 = (await screen.findByText('A-1')).closest('tr')!;
   expect(r1.className).toContain('row-changed');
+  expect(within(r1).getByText('Allowed')).toBeTruthy();
+  expect(within(r1).getByText('Blocked')).toBeTruthy();
   expect(screen.getByText('A-2').closest('tr')!.className).not.toContain('row-changed');
   await user.click(screen.getByRole('button', { name: 'Publish v2' }));
   const dlg = await screen.findByRole('alertdialog');
