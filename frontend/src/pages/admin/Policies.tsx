@@ -12,6 +12,7 @@ const HINT: Record<Match, string> = {
   suffix: 'A hostname ending, such as example.com. Matches the host and its subdomains.', domain: 'One exact hostname, such as app.example.com.',
   ip: 'One address, such as 203.0.113.7.', cidr: 'A range such as 203.0.113.0/24.', env: 'Development, Staging, UAT or Production.',
 };
+const LABEL: Record<string, string> = { unresolved: 'Unresolved' }; // not in the validation vocabulary
 const PRIVATE_OK: Match[] = ['suffix', 'domain', 'ip', 'cidr'];
 const OUTCOME_TONE = { allow: 'ok', approval: 'warn', deny: 'danger' } as const;
 const Outcomes = ({ v }: { v: string }) => <span className={`badge tone-${OUTCOME_TONE[v as Outcome] ?? 'neutral'}`}>{OUTCOME_LABEL[v] ?? v}</span>;
@@ -104,8 +105,8 @@ function DryTable({ rows }: { rows: DryRow[] }) {
     { key: 'n', header: 'Assessment', render: (r) => <><b>{r.name}</b><div className="muted">{r.owner}</div></> },
     { key: 't', header: 'Target', mono: true, render: (r) => r.target },
     { key: 'e', header: 'Environment', render: (r) => r.env },
-    { key: 'p', header: 'Published', render: (r) => <StatusBadge kind="validation" status={r.published} /> },
-    { key: 'd', header: 'Draft', render: (r) => <StatusBadge kind="validation" status={r.draft} /> },
+    { key: 'p', header: 'Published', render: (r) => <StatusBadge kind="validation" status={r.published} label={LABEL[r.published]} /> },
+    { key: 'd', header: 'Draft', render: (r) => <StatusBadge kind="validation" status={r.draft} label={LABEL[r.draft]} /> },
     { key: 's', header: 'Effect', render: (r) => (r.reset ? 'Needs validation again' : r.changed ? 'Changes' : 'No change') },
   ];
   return <DataTable caption="Dry run results" columns={cols} rows={rows} rowKey={(r) => r.assessment} rowClass={(r) => (r.changed ? 'row-changed' : '')} empty={{ title: 'No assessments to check' }} />;

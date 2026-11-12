@@ -50,7 +50,6 @@ export const VOCAB: Record<StatusKind, Record<string, StatusDef>> = {
     allowed: d('Allowed', 'ok', 'check'),
     approval: d('Approval required', 'warn', 'clock'),
     blocked: d('Blocked', 'danger', 'stop'),
-    unresolved: d('Unresolved', 'neutral', 'help'),
   },
   // 'active' has no badge: the latest job's state is shown instead (§5.5).
   assessment: {
