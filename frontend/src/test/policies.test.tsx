@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { App } from '../App';
-import { nextRuleId, stageIndex } from '../pages/admin/policyTypes';
+import { diffPolicies, nextRuleId, stageIndex } from '../pages/admin/policyTypes';
 import { AuthProvider } from '../auth/AuthContext';
 import { ToastProvider } from '../components';
 
@@ -114,4 +114,49 @@ it('owner on /admin/policies sees the denied state', async () => {
   mockApi({});
   mount('/admin/policies');
   expect(await screen.findByText(/limited to Platform Administrators/)).toBeTruthy();
+});
+
+it('diffPolicies: added, removed, changed, moved, ports, no-match', () => {
+  const r = (id: string, value = 'x.com') => ({ id, outcome: 'allow', match: 'suffix', value, note: '' }) as any;
+  const A = { rules: [r('R-01'), r('R-02'), r('R-03')], permitted_ports: [80, 443], no_match: 'approval' } as any;
+  const same = diffPolicies(A, A);
+  expect(same).toEqual({ added: [], removed: [], changed: [], ports: { added: [], removed: [] }, noMatch: null });
+  const B = { rules: [r('R-02'), r('R-01', 'y.com'), r('R-04')], permitted_ports: [443, 8080], no_match: 'deny' } as any;
+  const d = diffPolicies(A, B);
+  expect(d.added.map((x) => x.id)).toEqual(['R-04']);
+  expect(d.removed.map((x) => x.id)).toEqual(['R-03']);
+  expect(d.changed.map((x) => x.id)).toEqual(['R-01', 'R-02']); // R-01 value, R-02 moved
+  expect(d.ports).toEqual({ added: [8080], removed: [80] });
+  expect(d.noMatch).toEqual({ from: 'approval', to: 'deny' });
+});
+
+describe('policy versions page', () => {
+  const v1 = { ...published, status: 'superseded', note: 'first' };
+  const v2 = { ...published, version: 'v2', status: 'published', rules: 3 };
+  const doc2 = { ...doc, rules: [...doc.rules, { id: 'R-03', outcome: 'deny', match: 'domain', value: 'new.example.com', note: '' }] };
+  const routes = (extra = {}) => ({
+    '/admin/policies/versions': [v2, v1],
+    '/admin/policies/versions/v1': { ...v1, document: doc },
+    '/admin/policies/versions/v2': { ...v2, document: doc2 },
+    ...extra,
+  });
+
+  it('roll back only on superseded rows; sends reason and toasts', async () => {
+    const calls = mockApi(routes({ 'POST /admin/policies/versions/v1/rollback': json(200, { version: 'v3', changed: 2, reset: 1, jobs_cancelled: 0 }) }));
+    const user = userEvent.setup();
+    mount('/admin/policies/versions');
+    expect(await screen.findAllByRole('button', { name: /Roll back to v/ })).toHaveLength(1);
+    await user.click(screen.getByRole('button', { name: 'Roll back to v1' }));
+    expect(screen.getByText('This publishes a new version with the rules of v1. Targets that become stricter must be validated again.')).toBeTruthy();
+    await user.type(screen.getByLabelText(/Reason/), 'bad rule');
+    await user.click(screen.getByRole('button', { name: 'Roll back' }));
+    await waitFor(() => expect(calls.find((c) => c.path.endsWith('/rollback'))?.body).toEqual({ reason: 'bad rule' }));
+    expect(await screen.findByText('v3 published. 2 targets changed, 1 reset, 0 queued scans cancelled.')).toBeTruthy();
+  });
+
+  it('compare shows an added rule', async () => {
+    mockApi(routes());
+    mount('/admin/policies/versions');
+    expect(await screen.findByText(/R-03: Deny, Exact domain new\.example\.com/)).toBeTruthy();
+  });
 });

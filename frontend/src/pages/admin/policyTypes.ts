@@ -20,3 +20,20 @@ export const stageIndex = (d: Draft | null, published: boolean): 0 | 1 | 2 | 3 =
 
 export const nextRuleId = (rules: Rule[]) =>
   `R-${String(Math.max(0, ...rules.map((r) => Number(r.id.slice(2)) || 0)) + 1).padStart(2, '0')}`;
+
+/** Rules are matched by id; a rule is changed when any field or its position differs. */
+export function diffPolicies(a: PolicyDoc, b: PolicyDoc) {
+  const ids = (d: PolicyDoc) => d.rules.map((r) => r.id);
+  const added = b.rules.filter((r) => !ids(a).includes(r.id));
+  const removed = a.rules.filter((r) => !ids(b).includes(r.id));
+  const changed = a.rules.flatMap((from, i) => {
+    const j = ids(b).indexOf(from.id);
+    return j >= 0 && (j !== i || JSON.stringify(Object.entries(from).sort()) !== JSON.stringify(Object.entries(b.rules[j]).sort())) ? [{ id: from.id, from, to: b.rules[j] }] : [];
+  });
+  const pa = a.permitted_ports, pb = b.permitted_ports;
+  return {
+    added, removed, changed,
+    ports: { added: pb.filter((p) => !pa.includes(p)), removed: pa.filter((p) => !pb.includes(p)) },
+    noMatch: a.no_match === b.no_match ? null : { from: a.no_match, to: b.no_match },
+  };
+}
