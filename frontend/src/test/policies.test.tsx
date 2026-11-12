@@ -103,7 +103,7 @@ it('dry run: changed rows highlighted; publish shows counts and posts rev', asyn
   expect(screen.getByText('A-2').closest('tr')!.className).not.toContain('row-changed');
   await user.click(screen.getByRole('button', { name: 'Publish v2' }));
   const dlg = await screen.findByRole('alertdialog');
-  expect(within(dlg).getByText('1 targets change outcome. 1 will need to be validated again and their queued scans cancelled. Running scans continue.')).toBeTruthy();
+  expect(within(dlg).getByText('1 targets change outcome. 1 will need to be validated again and their queued scans cancelled. Running scans stop at their next step.')).toBeTruthy();
   await user.click(within(dlg).getByRole('button', { name: 'Publish v2' }));
   await waitFor(() => expect(calls.find((c) => c.path === '/admin/policies/draft/publish')?.body).toEqual({ rev: 3 }));
   expect(await screen.findByText('v2 published. 1 targets changed, 1 reset, 2 queued scans cancelled.')).toBeTruthy();
