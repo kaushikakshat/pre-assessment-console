@@ -173,6 +173,11 @@ def validate(aid: str, user=Depends(sec.current_user), db=Depends(get_db)):
         raise HTTPException(404, "Not found.")
     if (a.target, a.env, a.ports, a.hosts) != snap:
         raise HTTPException(409, "The assessment changed while it was being validated. Validate again.")
+    # FOR SHARE blocks a concurrent publish until we commit; a publish that already won leaves pv superseded
+    pv = db.scalar(select(PolicyVersion).where(PolicyVersion.version == pv.version).with_for_update(read=True)
+                   .execution_options(populate_existing=True))
+    if pv.status != "published":
+        raise HTTPException(409, "The target policy changed while validating. Validate again.")
     a.validation, a.policy_version = result, pv.version
     a.status = STATUS[result["outcome"]]
     a.approval = {"state": "pending", "note": None, "by": None, "at": None, "self": False} \

@@ -137,6 +137,11 @@ MFA (TOTP) is required for every role, one prompt per sign-in.
 | POST `/admin/policies/draft/import` | `{text ≤262144 chars, rev}` | `PolicyDraft` (keeps the note). 422 `{detail, errors[]}` for bad JSON, non-object, >500 rules or schema errors; 409 on stale `rev` |
 | DELETE `/admin/policies/draft` | – | 204; 404 when no draft |
 | POST `/admin/policies/draft/validate` | – | `PolicyDraft` with `checks` stored; `stage` becomes `validated` when no check fails |
+| POST `/admin/policies/draft/dry-run` | – | `PolicyDraft` with `dry_run` = `{at, rows[], changed, resets}`; rows are `{assessment, name, target, env, owner, stored, published, draft, changed, reset}`. DNS only, no HTTP. 409 "Validate the draft first." |
+| POST `/admin/policies/draft/publish` | `{rev}` | `{version, changed, reset, jobs_cancelled}`. 409 "Run a dry run of the current draft first." or stale `rev` |
+| GET `/admin/policies/versions` | – | `PolicyVersion[]` without `document`, newest first (drafts excluded) |
+| GET `/admin/policies/versions/{v}` | – | `PolicyVersion` with `document`; 404 for unknown or draft |
+| POST `/admin/policies/versions/{v}/rollback` | `{reason}` | Same result as publish, under a new label with note `Rollback to {v}: {reason}`. 422 blank reason · 409 "Discard or publish the open draft first." / "This version is already in force." |
 | GET `/admin/audit?q=&area=&actor=&outcome=` | – | `AuditEvent[]` newest first, capped at 500. Always sends `X-Total-Count` (all matches); `X-Truncated: true` when capped |
 | GET `/admin/audit.csv?…` | – | `text/csv`, all matching rows (no cap); the export itself is audited |
 

@@ -159,7 +159,7 @@ def get_one(jid: str, user=Depends(sec.current_user), db=Depends(get_db)):
     return shape(db, get_job_or_404(db, jid, user, "view"))
 
 
-def apply_cancel(db, j: Job, actor: str, extra: str = ""):
+def apply_cancel(db, j: Job, actor: str, extra: str = "", commit: bool = True):
     """Caller holds the job row lock. queued -> cancelled; running -> cancelling; finished -> 409."""
     if j.state == "queued":
         j.state, j.ended_at, j.cancel_requested = "cancelled", func.now(), True
@@ -170,8 +170,9 @@ def apply_cancel(db, j: Job, actor: str, extra: str = ""):
     elif j.state != "cancelling":
         raise HTTPException(409, "This scan has already finished.")
     record(db, actor, "job", "cancel", j.display_id, "success", f"Cancel requested; job is now {j.state}{extra}")
-    db.commit()
-    db.refresh(j)
+    if commit:
+        db.commit()
+        db.refresh(j)
 
 
 @router.post("/jobs/{jid}/cancel")

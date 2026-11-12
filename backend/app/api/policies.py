@@ -1,4 +1,8 @@
+import ipaddress
 import json
+import os
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import JSONResponse
@@ -6,11 +10,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
+from app.api.jobs import apply_cancel
 from app.core import security as sec
 from app.core.audit import record
 from app.db import get_db
-from app.models import Assessment, PolicyVersion
-from app.targets.policy import INVARIANTS, check_policy, content_hash, schema_errors
+from app.models import Assessment, Job, PolicyVersion, User
+from app.targets import ipguard
+from app.targets.policy import INVARIANTS, RANK, check_policy, content_hash, evaluate_outcome, schema_errors
+from app.targets.validate import parse_target
 
 router = APIRouter(prefix="/admin/policies", dependencies=[Depends(sec.require_admin)])
 MAX_RULES = 500
@@ -28,9 +35,17 @@ class ImportIn(BaseModel):
     rev: int
 
 
-def published(db) -> PolicyVersion:
-    pv = db.scalar(select(PolicyVersion).where(PolicyVersion.status == "published")
-                   .order_by(PolicyVersion.published_at.desc()).limit(1))
+class PublishIn(BaseModel):
+    rev: int
+
+
+class RollbackIn(BaseModel):
+    reason: str = Field(max_length=500)
+
+
+def published(db, lock=False) -> PolicyVersion:
+    q = select(PolicyVersion).where(PolicyVersion.status == "published").order_by(PolicyVersion.published_at.desc()).limit(1)
+    pv = db.scalar(q.with_for_update() if lock else q)
     if not pv:
         raise HTTPException(503, "Target validation is unavailable. Try again later.")
     return pv
@@ -144,3 +159,141 @@ def validate(admin=Depends(sec.require_admin), db=Depends(get_db)):
            f"{sum(c['result'] == 'fail' for c in checks)} failing checks")
     db.commit()
     return draft_shape(pv)
+
+
+# ORM-assigned None is stored as JSON null (not SQL NULL), so test the JSON type
+VALIDATED = func.jsonb_typeof(Assessment.validation) == "object"
+
+
+def _host(target):
+    try:
+        return parse_target(target).host
+    except ValueError:
+        return None
+
+
+def _lookup(host):
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+        return [host.strip("[]")]
+    except ValueError:
+        pass
+    try:
+        return ipguard.resolve(host, timeout=3)
+    except OSError:
+        return None
+
+
+def outcomes(db, published_doc, draft_doc, app_env) -> list[dict]:
+    """Re-evaluate every validated assessment under both documents; DNS only, never any HTTP."""
+    rows = db.execute(select(Assessment, User.name).join(User, User.id == Assessment.owner_id)
+                      .where(VALIDATED).order_by(Assessment.id)).all()
+    hosts = sorted({h for a, _ in rows if (h := _host(a.target))})
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        addrs = dict(zip(hosts, ex.map(_lookup, hosts)))
+    out = []
+    for a, owner in rows:
+        ad = addrs.get(_host(a.target))
+        pub = evaluate_outcome(a.target, a.env, a.ports, published_doc, ad, app_env)
+        new = evaluate_outcome(a.target, a.env, a.ports, draft_doc, ad, app_env)
+        stored = a.validation["outcome"]
+        out.append({"assessment": a.display_id, "name": a.name, "target": a.target, "env": a.env, "owner": owner,
+                    "stored": stored, "published": pub, "draft": new, "changed": pub != new,
+                    "reset": new in RANK and RANK[new] > RANK[stored]})
+    return out
+
+
+def apply_publish(db, new_doc, label, actor, note, draft=None) -> dict:
+    """One transaction: supersede, publish, reset stricter assessments, cancel their queued scans.
+    Lock order: policy rows, assessments by id, then jobs by id."""
+    old = published(db, lock=True)
+    if draft is not None:
+        db.execute(select(PolicyVersion).where(PolicyVersion.version == draft.version).with_for_update()
+                   .execution_options(populate_existing=True))
+    locked = {a.display_id: a for a in db.scalars(
+        select(Assessment).where(VALIDATED).order_by(Assessment.id).with_for_update()
+        .execution_options(populate_existing=True))}
+    rows = outcomes(db, old.rules, new_doc, os.environ.get("APP_ENV", "prod"))
+    old.status = "superseded"
+    db.flush()  # free the 'published' slot before the new row takes it
+    if draft is None:
+        db.add(PolicyVersion(version=label, rules=json.loads(json.dumps(new_doc)), status="published", created_by=actor,
+                             published_at=datetime.now(timezone.utc), published_by=actor, note=note))
+    else:
+        draft.status, draft.published_at, draft.published_by = "published", datetime.now(timezone.utc), actor
+        draft.validation = draft.dry_run = None
+    action = "rollback" if draft is None else "publish"
+    db.flush()
+    cancelled = 0
+    resets = [r for r in rows if r["reset"]]
+    for r in resets:
+        a = locked[r["assessment"]]
+        a.validation = a.approval = a.policy_version = None
+        a.status, a.updated_at = "draft", func.now()
+        for j in db.scalars(select(Job).where(Job.assessment_id == a.id, Job.state == "queued").order_by(Job.id)
+                            .with_for_update()):
+            apply_cancel(db, j, actor, f". Reason: target policy {label} made this target stricter", commit=False)
+            cancelled += 1
+        record(db, actor, "validation", "policy-reset", a.display_id, "success",
+               f"Policy {label}: outcome now {r['draft']}; validate again", label)
+    changed = sum(r["changed"] for r in rows)
+    record(db, actor, "policy", action, label, "success",
+           f"{changed} targets change, {len(resets)} need re-validation, {cancelled} queued scans cancelled", label)
+    db.commit()
+    return {"version": label, "changed": changed, "reset": len(resets), "jobs_cancelled": cancelled}
+
+
+@router.post("/draft/dry-run")
+def dry_run(admin=Depends(sec.require_admin), db=Depends(get_db)):
+    pv = locked_draft(db)
+    if draft_shape(pv)["stage"] == "draft":
+        raise HTTPException(409, "Validate the draft first.")
+    rows = outcomes(db, published(db).rules, pv.rules, os.environ.get("APP_ENV", "prod"))
+    pv.dry_run = {"hash": content_hash(pv.rules), "at": datetime.now(timezone.utc).isoformat(), "rows": rows,
+                  "changed": sum(r["changed"] for r in rows), "resets": sum(r["reset"] for r in rows)}
+    record(db, admin.email, "policy", "draft-dry-run", pv.version, "success",
+           f"{pv.dry_run['changed']} targets change, {pv.dry_run['resets']} would need re-validation")
+    db.commit()
+    return draft_shape(pv)
+
+
+@router.post("/draft/publish")
+def publish(body: PublishIn, admin=Depends(sec.require_admin), db=Depends(get_db)):
+    published(db, lock=True)  # policy rows lock in published-then-draft order
+    pv = locked_draft(db)
+    if pv.rev != body.rev:
+        raise HTTPException(409, STALE)
+    if draft_shape(pv)["stage"] != "dry-run":
+        raise HTTPException(409, "Run a dry run of the current draft first.")
+    return apply_publish(db, pv.rules, pv.version, admin.email, pv.note, draft=pv)
+
+
+@router.get("/versions")
+def versions(db=Depends(get_db)):
+    pvs = db.scalars(select(PolicyVersion).where(PolicyVersion.status != "draft")
+                     .order_by(PolicyVersion.published_at.desc().nulls_last(), PolicyVersion.created_at.desc()))
+    return [{k: v for k, v in version_shape(db, pv).items() if k != "document"} for pv in pvs]
+
+
+@router.get("/versions/{v}")
+def version(v: str, db=Depends(get_db)):
+    pv = db.get(PolicyVersion, v)
+    if not pv or pv.status == "draft":
+        raise HTTPException(404, "Not found.")
+    return version_shape(db, pv)
+
+
+@router.post("/versions/{v}/rollback")
+def rollback(v: str, body: RollbackIn, admin=Depends(sec.require_admin), db=Depends(get_db)):
+    reason = body.reason.strip()
+    if not reason:
+        raise HTTPException(422, "Give a reason for the rollback.")
+    cur = published(db, lock=True)
+    if db.scalar(select(PolicyVersion.version).where(PolicyVersion.status == "draft")):
+        raise HTTPException(409, "Discard or publish the open draft first.")
+    pv = db.get(PolicyVersion, v)
+    if not pv:
+        raise HTTPException(404, "Not found.")
+    if pv.version == cur.version:
+        raise HTTPException(409, "This version is already in force.")
+    return apply_publish(db, pv.rules, next_label(db), admin.email, f"Rollback to {v}: {reason}")
