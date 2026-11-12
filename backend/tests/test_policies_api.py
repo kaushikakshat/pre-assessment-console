@@ -84,6 +84,7 @@ def test_import_rejects_bad_json(adm):
     new = {**doc, "no_match": "allow"}
     r = adm.post(P + "/draft/import", json={"text": json.dumps(new), "rev": 0})
     assert r.status_code == 200 and r.json()["document"] == new and r.json()["rev"] == 1
+    assert "draft-import" in [e["action"] for e in adm.get("/api/admin/audit?area=policy").json()]
 
 
 def test_validate_sets_stage_and_edit_clears_it(adm):

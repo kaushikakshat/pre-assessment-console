@@ -72,7 +72,7 @@ def invalid(errors):
     return JSONResponse({"detail": "The policy has errors.", "errors": errors}, status_code=422)
 
 
-def replace(db, admin, doc, rev, note=None):
+def replace(db, admin, doc, rev, action, note=None):
     """Swap the draft document under the row lock; returns a 422 response instead of the draft on bad input."""
     pv = locked_draft(db)
     if pv.rev != rev:
@@ -85,7 +85,7 @@ def replace(db, admin, doc, rev, note=None):
     pv.rules, pv.rev, pv.validation, pv.dry_run = doc, pv.rev + 1, None, None
     if note is not None:
         pv.note = note
-    record(db, admin.email, "policy", "draft-save", pv.version, "success", f"rev {pv.rev}, {len(doc['rules'])} rules")
+    record(db, admin.email, "policy", action, pv.version, "success", f"rev {pv.rev}, {len(doc['rules'])} rules")
     db.commit()
     return draft_shape(pv)
 
@@ -114,7 +114,7 @@ def start(admin=Depends(sec.require_admin), db=Depends(get_db)):
 
 @router.put("/draft")
 def save(body: SaveIn, admin=Depends(sec.require_admin), db=Depends(get_db)):
-    return replace(db, admin, body.document, body.rev, body.note)
+    return replace(db, admin, body.document, body.rev, "draft-save", body.note)
 
 
 @router.post("/draft/import")
@@ -123,7 +123,7 @@ def import_doc(body: ImportIn, admin=Depends(sec.require_admin), db=Depends(get_
         doc = json.loads(body.text)
     except ValueError:
         return invalid(["The text is not valid JSON"])
-    return replace(db, admin, doc, body.rev)
+    return replace(db, admin, doc, body.rev, "draft-import")
 
 
 @router.delete("/draft", status_code=204)
