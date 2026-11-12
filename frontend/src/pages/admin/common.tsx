@@ -23,11 +23,12 @@ export function useAct() {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
-  const run = async (fn: () => Promise<unknown>, ok: string) => {
-    setBusy(true); setFailure(null);
-    try { await fn(); toast(ok); return true; }
-    catch (e) { setFailure(e instanceof ApiError ? e.detail : 'That did not work. Try again.'); return false; }
+  const [error, setError] = useState<ApiError | null>(null);
+  const run = async <R,>(fn: () => Promise<R>, ok: string | ((r: R) => string)) => {
+    setBusy(true); setFailure(null); setError(null);
+    try { const r = await fn(); toast(typeof ok === 'function' ? ok(r) : ok); return true; }
+    catch (e) { setError(e instanceof ApiError ? e : null); setFailure(e instanceof ApiError ? e.detail : 'That did not work. Try again.'); return false; }
     finally { setBusy(false); }
   };
-  return { busy, failure, run, clear: () => setFailure(null) };
+  return { busy, failure, error, run, clear: () => { setFailure(null); setError(null); } };
 }
