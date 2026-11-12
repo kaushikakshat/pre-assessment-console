@@ -167,7 +167,7 @@ def evaluate_outcome(target, env, ports_field, policy, addrs, app_env) -> str:
     if _check_addrs(addrs, _internal(rule, app_env, addrs) is not False)[0] == "fail":
         return "blocked"
     try:
-        wanted = {p.effective_port, *(parse_ports(ports_field) if (ports_field or "").strip() else [])  # create defaults empty to the scheme port}
+        wanted = {p.effective_port, *(parse_ports(ports_field) if (ports_field or "").strip() else [])}  # create defaults empty to the scheme port
     except ValueError:
         return "blocked"
     if wanted - set(policy.get("permitted_ports", [])):
