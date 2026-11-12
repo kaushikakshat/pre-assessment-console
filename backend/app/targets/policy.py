@@ -175,7 +175,7 @@ def evaluate_outcome(target, env, ports_field, policy, addrs, app_env) -> str:
         return "blocked"
     unresolved = addrs is None
     addrs = addrs or []  # DNS failure: ip/cidr rules cannot match, but deny rules and ports still apply
-    rule = first_rule(policy, p.host, addrs, env)
+    rule = first_rule(policy, p.host, addrs, env, app_env)
     if _check_addrs(addrs, _internal(rule, app_env, addrs) is not False)[0] == "fail":
         return "blocked"
     try:

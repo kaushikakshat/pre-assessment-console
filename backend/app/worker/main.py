@@ -103,7 +103,8 @@ def _internal_allowance(a, policy, resolver):
     try:
         host = parse_target(a.target).host
         addrs = ipguard.resolve(host, resolver)
-        return _internal(first_rule(policy, host, addrs, a.env), os.environ.get("APP_ENV", "prod"), addrs)
+        app_env = os.environ.get("APP_ENV", "prod")
+        return _internal(first_rule(policy, host, addrs, a.env, app_env), app_env, addrs)
     except (ValueError, OSError):
         return False
 

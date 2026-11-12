@@ -122,7 +122,7 @@ function RulesTable({ rules, actions }: { rules: Rule[]; actions?: RulesActions 
     { key: 'm', header: 'Match', render: (r) => MATCH_LABEL[r.match] },
     { key: 'v', header: 'Value', mono: true, render: (r) => r.value },
     { key: 'n', header: 'Note', render: (r) => r.note },
-    { key: 't', header: 'Tags', render: (r) => <>{r.dev_only && <span className="tag">Dev only</span>}{r.internal && <span className="tag">Private allowed</span>}</> },
+    { key: 'p', header: 'Private addresses', render: (r) => (r.internal ? 'Allowed' : '—') },
   ];
   if (actions) {
     cols.push({ key: 'x', header: <span className="sr-only">Actions</span>, render: (r) => {

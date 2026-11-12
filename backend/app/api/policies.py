@@ -114,7 +114,10 @@ def overview(db=Depends(get_db)):
 
 @router.post("/draft", status_code=201)
 def start(admin=Depends(sec.require_admin), db=Depends(get_db)):
-    pv = PolicyVersion(version=next_label(db), rules=json.loads(json.dumps(published(db).rules)), status="draft",
+    doc = json.loads(json.dumps(published(db).rules))
+    if os.environ.get("APP_ENV", "prod") != "dev":  # dev-only demo rules never carry into a server policy
+        doc["rules"] = [r for r in doc.get("rules", []) if not r.get("dev_only")]
+    pv = PolicyVersion(version=next_label(db), rules=doc, status="draft",
                        note="", created_by=admin.email)
     db.add(pv)
     try:

@@ -71,3 +71,9 @@ def test_schema_field_types():
         assert any(msg in e for e in schema_errors(doc(bad))), msg
     ok = r("R-01"); del ok["note"]
     assert schema_errors(doc(ok, r("R-02", value="b.example.com", note="", internal=True, dev_only=False))) == []
+
+
+def test_dev_only_rules_ignored_outside_dev():
+    pol = doc(r("R-01", match="domain", value="testtarget", dev_only=True))
+    assert evaluate_outcome("http://testtarget/", "Development", "", pol, ["93.184.216.34"], "prod") == "approval"
+    assert evaluate_outcome("http://testtarget/", "Development", "", pol, ["93.184.216.34"], "dev") == "allowed"

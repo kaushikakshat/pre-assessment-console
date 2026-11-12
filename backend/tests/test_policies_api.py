@@ -51,7 +51,10 @@ def test_start_save_discard(adm):
     d = adm.post(P + "/draft", json={})
     assert d.status_code == 201
     d = d.json()
-    assert (d["version"], d["stage"], d["document"], d["note"]) == ("v2", "draft", r["published"]["document"], "")
+    pub = r["published"]["document"]
+    assert any(x.get("dev_only") for x in pub["rules"])  # v1 carries the dev-only demo rules
+    without_dev = {**pub, "rules": [x for x in pub["rules"] if not x.get("dev_only")]}
+    assert (d["version"], d["stage"], d["document"], d["note"]) == ("v2", "draft", without_dev, "")  # tests run with APP_ENV unset (prod)
     assert adm.post(P + "/draft", json={}).status_code == 409
     doc = {**d["document"], "rules": d["document"]["rules"] + [rule(3)]}
     r = adm.put(P + "/draft", json={"document": doc, "note": "n", "rev": 0})
