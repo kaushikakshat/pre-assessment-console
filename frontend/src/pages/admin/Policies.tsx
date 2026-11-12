@@ -55,11 +55,13 @@ export function Policies() {
       <Stepper steps={STEPS} current={stageIndex(draft, false)} />
       {failed}
       <div className="grid2">
-        <Tabs tabs={[{ key: 'visual', label: 'Visual rules' }, { key: 'json', label: 'Structured config' }]}>
-          {(tab) => tab === 'visual'
-            ? <Visual key={draft.rev} draft={draft} busy={act.busy} save={save} />
-            : <Structured key={draft.rev} draft={draft} onApplied={reload} />}
-        </Tabs>
+        <div className="stack">{/* Tabs renders two siblings; keep them in one grid cell */}
+          <Tabs tabs={[{ key: 'visual', label: 'Visual rules' }, { key: 'json', label: 'Structured config' }]}>
+            {(tab) => tab === 'visual'
+              ? <Visual key={draft.rev} draft={draft} busy={act.busy} save={save} />
+              : <Structured key={draft.rev} draft={draft} onApplied={reload} />}
+          </Tabs>
+        </div>
         <div className="stack-lg">
           <Card title="Next step">
             <div className="stack">
@@ -156,13 +158,17 @@ function Visual({ draft, busy, save }: { draft: Draft; busy: boolean; save: (d: 
         <RulesTable rules={rules} actions={actions} />
       </Card>
       <p className="muted">Rules are checked in order and the first match wins.</p>
-      <TextField id="ports" label="Permitted ports" hint="Comma-separated, such as 80, 443." value={ports} onChange={(e) => setPorts(e.target.value)} />
-      <Select id="nomatch" label="When no rule matches" value={noMatch} onChange={(e) => setNoMatch(e.target.value as Outcome)}>
-        {Object.entries(OUTCOME_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-      </Select>
-      <TbdMarker label="No-match default" od={18} />
-      <Textarea id="note" label="Change note" maxLength={500} value={note} onChange={(e) => setNote(e.target.value)} />
-      <div><Button variant="primary" busy={busy} onClick={() => put(rules)}>Save draft</Button></div>
+      <Card title="Settings">
+        <div className="stack">
+          <TextField id="ports" label="Permitted ports" hint="Comma-separated, such as 80, 443." value={ports} onChange={(e) => setPorts(e.target.value)} />
+          <Select id="nomatch" label="When no rule matches" value={noMatch} onChange={(e) => setNoMatch(e.target.value as Outcome)}>
+            {Object.entries(OUTCOME_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+          </Select>
+          <TbdMarker label="No-match default" od={18} />
+          <Textarea id="note" label="Change note" maxLength={500} value={note} onChange={(e) => setNote(e.target.value)} />
+          <div><Button variant="primary" busy={busy} onClick={() => put(rules)}>Save draft</Button></div>
+        </div>
+      </Card>
       {editing && (
         <RuleModal key={editing === 'new' ? 'new' : editing.id} rule={editing === 'new' ? { id: nextRuleId(rules), outcome: 'approval', match: 'suffix', value: '', note: '' } : editing} isNew={editing === 'new'}
           onClose={() => setEditing(null)}
@@ -206,10 +212,12 @@ function Structured({ draft, onApplied }: { draft: Draft; onApplied: () => void 
   const errors = act.error?.errors ?? (act.failure ? [act.failure] : []);
   const apply = async () => { if (await act.run(() => api(`${BASE}/import`, { method: 'POST', body: { text, rev: draft.rev } }), 'Draft updated.')) onApplied(); };
   return (
-    <div className="stack">
-      <Textarea id="json" label="Policy document (JSON)" mono rows={18} value={text} onChange={(e) => setText(e.target.value)} />
-      {errors.length > 0 && <ul className="field-error" role="alert">{errors.map((e) => <li key={e}>{e}</li>)}</ul>}
-      <div><Button variant="primary" busy={act.busy} onClick={apply}>Validate &amp; apply to draft</Button></div>
-    </div>
+    <Card title="Structured config">
+      <div className="stack">
+        <Textarea id="json" label="Policy document (JSON)" mono rows={18} value={text} onChange={(e) => setText(e.target.value)} />
+        {errors.length > 0 && <ul className="field-error" role="alert">{errors.map((e) => <li key={e}>{e}</li>)}</ul>}
+        <div><Button variant="primary" busy={act.busy} onClick={apply}>Validate &amp; apply to draft</Button></div>
+      </div>
+    </Card>
   );
 }
