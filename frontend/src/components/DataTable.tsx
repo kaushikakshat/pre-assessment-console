@@ -17,9 +17,10 @@ interface DataTableProps<T> {
   selection?: Selection<T> & { header: string };
   empty: { title: string; text?: string; action?: ReactNode };
   caption?: string;
+  rowClass?: (row: T) => string;
 }
 
-export function DataTable<T>({ columns, rows, rowKey, onRowClick, selection, empty, caption }: DataTableProps<T>) {
+export function DataTable<T>({ columns, rows, rowKey, onRowClick, selection, empty, caption, rowClass }: DataTableProps<T>) {
   if (rows.length === 0) {
     return <section className="card"><EmptyState title={empty.title} action={empty.action}>{empty.text}</EmptyState></section>;
   }
@@ -40,7 +41,7 @@ export function DataTable<T>({ columns, rows, rowKey, onRowClick, selection, emp
             return (
               <tr
                 key={key}
-                className={`${onRowClick ? 'clickable' : ''} ${checked ? 'selected' : ''}`}
+                className={`${onRowClick ? 'clickable' : ''} ${checked ? 'selected' : ''} ${rowClass?.(row) ?? ''}`}
                 onClick={onRowClick && ((e) => { if (!(e.target as HTMLElement).closest('a,button,input,select,label')) onRowClick(row); })}
               >
                 {selection && (

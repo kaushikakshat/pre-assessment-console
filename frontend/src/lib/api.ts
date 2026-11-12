@@ -1,5 +1,5 @@
 export class ApiError extends Error {
-  constructor(public status: number, public detail: string, public fields?: Record<string, string>) {
+  constructor(public status: number, public detail: string, public fields?: Record<string, string>, public errors?: string[]) {
     super(detail);
   }
 }
@@ -43,12 +43,15 @@ export async function api<T = void>(path: string, opts: { method?: string; body?
   if (res.ok) return (res.status === 204 ? undefined : await res.json()) as T;
   let detail = 'Something went wrong. Try again.';
   let fields: Record<string, string> | undefined;
+  let errors: string[] | undefined;
   try {
     const j = await res.json();
+    if (Array.isArray(j.errors)) errors = j.errors;
     if (typeof j.detail === 'string') detail = j.detail;
+    else if (Array.isArray(j.detail)) detail = j.detail.map((d: { msg?: string }) => d.msg).filter(Boolean).join(' ') || detail; // FastAPI field validation
     else if (j.detail?.fields) { fields = j.detail.fields; detail = 'Check the highlighted fields.'; }
   } catch { /* non-JSON error body: keep the generic sentence */ }
   if (res.status === 401 && !path.startsWith('/auth/')) onUnauthorized?.();
   if (res.status === 403 && detail === PASSWORD_REQUIRED) onPasswordRequired?.();
-  throw new ApiError(res.status, detail, fields);
+  throw new ApiError(res.status, detail, fields, errors);
 }

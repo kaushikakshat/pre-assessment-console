@@ -38,5 +38,9 @@ users, sessions (token hash), login_attempts, assessments, policy_versions, jobs
 - `pre`/`deep` profiles and non-Quick modules are `available: false` with a reason; no placeholder results.
 - Dev-only internal-target rule allows `testtarget` when `APP_ENV=dev`; loopback/link-local/metadata never overridable.
 
+## Target policy lifecycle
+
+A policy change moves draft, validate (schema, conflicts, invariants, ports), dry run (every validated assessment re-evaluated under the published and draft documents using DNS only), then publish. Publishing is one transaction: the old version is superseded, and any assessment whose outcome becomes stricter (allowed < approval < blocked) loses its validation and approval, returns to `draft`, and has its queued scans cancelled; running scans and looser outcomes are untouched. Rollback republishes an old document under a new label through the same path. Drafts are never used for validation: `validate` always reads the published version, and refuses to store a result if that version was superseded mid-validation.
+
 ## Run locally
 Set `ZAP_API_KEY`, `EGRESS_TOKEN` and the credential keypair (`python -m app.cli gen-credential-keys`) in `.env`; add `--profile dast` to start ZAP. `cp .env.example .env`, `docker-compose --profile dev up -d --build --scale worker=2`, then `docker-compose exec api python -m app.cli create-admin --email ... --name ...`. Only the UI is published (:8080); the API is reached through it at http://localhost:8080/api. Tests: `docker-compose --profile test run --rm test` (uses a separate `preassess_test` database).

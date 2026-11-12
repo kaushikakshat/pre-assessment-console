@@ -15,7 +15,7 @@ const ROLE_LABEL = { owner: 'Assessment Owner', admin: 'Platform Administrator' 
 
 const CRUMBS: Record<string, string> = {
   '/dashboard': 'Dashboard', '/assessments': 'My Assessments', '/queue': 'Scan Queue', '/help': 'Help & Safety Guidance', '/account': 'Change password',
-  '/admin/users': 'Users & Roles', '/admin/jobs': 'Assessments / Jobs', '/admin/capacity': 'Scan Capacity & Scheduling', '/admin/profiles': 'Profiles & Modules', '/admin/audit': 'Audit Logs',
+  '/admin/users': 'Users & Roles', '/admin/jobs': 'Assessments / Jobs', '/admin/capacity': 'Scan Capacity & Scheduling', '/admin/profiles': 'Profiles & Modules', '/admin/policies': 'Target Policies', '/admin/policies/versions': 'Policy Versions', '/admin/audit': 'Audit Logs',
 };
 
 export function breadcrumbs(pathname: string): { label: string; to?: string }[] {
@@ -57,6 +57,8 @@ export function Shell() {
           { to: '/admin/jobs', label: 'Assessments / Jobs', icon: 'folder' },
           { to: '/admin/capacity', label: 'Scan Capacity & Scheduling', icon: 'clock' },
           { to: '/admin/profiles', label: 'Profiles & Modules', icon: 'folder' },
+          { to: '/admin/policies', label: 'Target Policies', icon: 'shield', end: true },
+          { to: '/admin/policies/versions', label: 'Policy Versions', icon: 'doc' },
           { to: '/admin/audit', label: 'Audit Logs', icon: 'doc' },
         ] },
         { title: 'My testing', items: mine },

@@ -12,10 +12,10 @@ from app.core.audit import record
 from app.db import get_db
 from app.models import Assessment, AuditEvent, Finding, Job, PolicyVersion, User
 from app.targets import ipguard
+from app.targets.policy import ENVS
 from app.targets.validate import parse_ports, parse_target, validate_target
 
 router = APIRouter(prefix="/assessments")
-ENVS = ("Development", "Staging", "UAT", "Production")
 ACTIVE_JOB = ("queued", "validating", "scheduled", "running", "cancelling")
 NEEDS_ACTION = ("new", "open", "under-review", "reopened")
 STATUS = {"allowed": "active", "approval": "awaiting-approval", "blocked": "blocked"}
@@ -173,6 +173,11 @@ def validate(aid: str, user=Depends(sec.current_user), db=Depends(get_db)):
         raise HTTPException(404, "Not found.")
     if (a.target, a.env, a.ports, a.hosts) != snap:
         raise HTTPException(409, "The assessment changed while it was being validated. Validate again.")
+    # FOR SHARE blocks a concurrent publish until we commit; a publish that already won leaves pv superseded
+    pv = db.scalar(select(PolicyVersion).where(PolicyVersion.version == pv.version).with_for_update(read=True)
+                   .execution_options(populate_existing=True))
+    if pv.status != "published":
+        raise HTTPException(409, "The target policy changed while validating. Validate again.")
     a.validation, a.policy_version = result, pv.version
     a.status = STATUS[result["outcome"]]
     a.approval = {"state": "pending", "note": None, "by": None, "at": None, "self": False} \

@@ -105,8 +105,10 @@ def _matches(rule, host, addrs, env) -> bool:
     return False
 
 
-def first_rule(policy, host, addrs, env):
-    return next((r for r in policy.get("rules", []) if _matches(r, host, addrs, env)), None)
+def first_rule(policy, host, addrs, env, app_env="prod"):
+    """dev_only rules are not part of the policy outside APP_ENV=dev."""
+    return next((r for r in policy.get("rules", [])
+                 if (app_env == "dev" or not r.get("dev_only")) and _matches(r, host, addrs, env)), None)
 
 
 def _internal(rule, app_env, addrs):
@@ -167,7 +169,7 @@ def validate_target(target, env, ports_field, policy, resolver=socket.getaddrinf
         return "pass", f"Resolved to {len(c['addrs'])} address(es)."
 
     def addresses():
-        c["rule"] = first_rule(policy, c["p"].host, c["addrs"], env)
+        c["rule"] = first_rule(policy, c["p"].host, c["addrs"], env, app_env)
         internal = _internal(c["rule"], app_env, c["addrs"])
         res, detail = _check_addrs(c["addrs"], internal is not False)
         if res == "pass" and internal is not False and any(ipguard.classify(a)[0] for a in c["addrs"]):
@@ -230,7 +232,7 @@ def validate_target(target, env, ports_field, policy, resolver=socket.getaddrinf
                 addrs = ipguard.resolve(nxt.host, resolver)
             except OSError:
                 return "fail", f"Redirect leaves the approved scope: {nxt.host}"
-            rule = first_rule(policy, nxt.host, addrs, env)
+            rule = first_rule(policy, nxt.host, addrs, env, app_env)
             if rule and rule.get("outcome") == "deny":
                 return "fail", f"Redirect blocked: denied by rule {rule['id']}."
             internal = _internal(rule, app_env, addrs)

@@ -9,6 +9,8 @@ import { Users } from './pages/admin/Users';
 import { AdminJobs } from './pages/admin/AdminJobs';
 import { CapacityPage } from './pages/admin/Capacity';
 import { Profiles } from './pages/admin/Profiles';
+import { Policies } from './pages/admin/Policies';
+import { PolicyVersions } from './pages/admin/PolicyVersions';
 import { Audit } from './pages/admin/Audit';
 import { Dashboard } from './pages/Dashboard';
 import { Assessments } from './pages/Assessments';
@@ -44,6 +46,8 @@ export function App() {
             <Route path="jobs" element={<AdminJobs />} />
             <Route path="capacity" element={<CapacityPage />} />
             <Route path="profiles" element={<Profiles />} />
+            <Route path="policies" element={<Policies />} />
+            <Route path="policies/versions" element={<PolicyVersions />} />
             <Route path="audit" element={<Audit />} />
           </Route>
           <Route path="*" element={<section className="card"><EmptyState title="Page not found">Use the navigation to find what you need.</EmptyState></section>} />

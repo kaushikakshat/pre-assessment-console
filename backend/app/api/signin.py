@@ -67,7 +67,8 @@ def make_client(db, a, hosts: set[str]) -> SafeClient:
             addrs = ipguard.resolve(h, socket.getaddrinfo)
         except (OSError, ValueError):
             continue
-        net = _internal(first_rule(pv.rules if pv else {}, h, addrs, a.env), os.environ.get("APP_ENV", "prod"), addrs)
+        app_env = os.environ.get("APP_ENV", "prod")
+        net = _internal(first_rule(pv.rules if pv else {}, h, addrs, a.env, app_env), app_env, addrs)
         if net is not False and any(ipguard.classify(x)[0] for x in addrs):
             internal[h] = net
     return SafeClient(hosts, internal, max_requests=10, verify=not a.allow_untrusted_cert)
