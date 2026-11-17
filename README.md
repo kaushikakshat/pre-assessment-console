@@ -68,14 +68,14 @@ The `dev` profile adds two deliberately weak practice targets (`testtarget` and 
 ```bash
 docker-compose --profile test run --build --rm test          # backend (pytest)
 cd frontend && npx tsc --noEmit && npm test                    # frontend (vitest)
-docker-compose exec -T worker python /app/scripts/e2e_phase3.py  # end-to-end scan; ends with RESULT ALL PASS
+docker-compose exec -T worker python /app/scripts/e2e_phase3.py  # end-to-end scan (needs the Quick start stack, dev + dast); ends with RESULT ALL PASS
 ```
 
 ## Deploying to a server
 
 - Put a TLS terminator in front of `web`, and set `APP_ENV=prod` and `COOKIE_SECURE=true` (without TLS, browsers drop the cookie and sign-in fails).
 - Start with `docker-compose --profile dast up -d --build --scale worker=2`, **without** the `dev` profile. Without `dast`, ZAP doesn't start and the Pre-Assessment and Deep profiles can't run.
-- Use long random secrets. The api and worker refuse to start while any `change-me` placeholder is still set.
+- Use long random secrets. The api and worker refuse to start while `SECRET_KEY`, `APP_DB_PASSWORD`, `ZAP_API_KEY` or `EGRESS_TOKEN` is still a `change-me` placeholder; `POSTGRES_PASSWORD` is not checked, so change it yourself.
 - Back up `CREDENTIALS_PRIVATE_KEY`. Losing or changing it makes every saved test account unreadable.
 - Never run `docker-compose down -v` on a server, because it deletes the database volume.
 

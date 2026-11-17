@@ -1,2 +1,3 @@
+# Fake values on purpose: the demo target exposes this file so the exposed-file check has something to find.
 DB_PASSWORD=hunter2
 API_KEY=sk_test_123

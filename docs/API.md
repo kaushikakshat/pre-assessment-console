@@ -1,7 +1,7 @@
-# API contract — Phase 2 slice
+# API reference
 
 Binding contract between `backend/` (FastAPI) and `frontend/` (React). Change it only with a recorded decision.
-UI vocabulary, enums and copy come from `DESIGN_SYSTEM.md` §5, §8, §12.
+UI vocabulary, enums and copy come from [DESIGN_SYSTEM.md](../DESIGN_SYSTEM.md) §5, §8, §12.
 
 ## Conventions
 - Base path `/api`. JSON in/out. Timestamps: ISO-8601 UTC strings (`2026-11-09T08:50:00Z`); the UI shows IST.
@@ -11,7 +11,7 @@ UI vocabulary, enums and copy come from `DESIGN_SYSTEM.md` §5, §8, §12.
   - 401 not signed in · 403 forbidden (role) · **404 for both "does not exist" and "no access" on objects** (no existence oracle; UI shows DeniedState) · 409 conflict · 422 validation (`detail` may be a string or `{"fields": {"name": "message"}}`) · 429 throttled · 503 submissions blocked / service down.
 - IDs are strings in display format: `A-0112`, `JOB-001402`, `F-2204`, `v1`, `U-007`.
 
-## Enums (identical to DESIGN_SYSTEM §12)
+## Enums (identical to [DESIGN_SYSTEM.md](../DESIGN_SYSTEM.md) §12)
 ```
 Role            = 'owner' | 'admin'                      (labels: Assessment Owner | Platform Administrator)
 Environment     = 'Development' | 'Staging' | 'UAT' | 'Production'

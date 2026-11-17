@@ -1,10 +1,10 @@
 # Pre-Assessment Console — Design Pattern Library & UI Rules
 
-> **For Claude Code.** This file is the source of truth for every user interface in the Internal Web & API Security Pre-Assessment Platform. Read it in full before creating or changing any screen, component, copy or style. Reference it from `CLAUDE.md` (for example: `See docs/DESIGN_SYSTEM.md for all UI work`).
+> This file is the source of truth for every user interface in the Pre-Assessment Console. Read it in full before creating or changing any screen, component, copy or style.
 >
 > - **MUST / MUST NOT** are hard rules. Code that breaks one is a defect.
 > - **SHOULD** is the default; deviate only with a written reason in the PR.
-> - **Precedence:** Product decisions (§1.2) → this file → PRD and other project documents → your own judgement. If this file conflicts with a project document, follow this file and mention the conflict in the PR.
+> - **Precedence:** Product decisions (§1.2) → this file → other project documents → your own judgement. If this file conflicts with a project document, follow this file and mention the conflict in the PR.
 > - Never invent requirements, roles, states, permissions or copy that this file does not define. If something is undefined, use a `TBD` marker (§6.32) and list it in the PR.
 >
 > Version 1.0 · 02 Nov 2026 · Derived from the approved clickable prototype (Owner + Admin).

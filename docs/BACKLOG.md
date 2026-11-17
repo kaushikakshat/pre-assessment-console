@@ -1,4 +1,4 @@
-# Backlog — deferred review findings (Phase 2 slice)
+# Backlog — deferred review findings
 
 Triaged in the final whole-branch review. Pre-UAT items are already fixed; these remain.
 

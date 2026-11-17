@@ -11,7 +11,7 @@
 | Component | Responsibility |
 |---|---|
 | `web` | Serves the SPA, proxies `/api` to `api` |
-| `api` | Auth (argon2 + TOTP, sessions), permFor/can authorization, target validation, assessments/jobs/findings APIs, audit |
+| `api` | Auth (argon2 + TOTP, sessions), role and ownership checks, target validation, assessments/jobs/findings APIs, audit |
 | `migrate` | Runs `alembic upgrade head` as the DB owner, then exits; `api` and `worker` start after it |
 | `worker` | Claims jobs, runs the profile's modules, writes redacted findings, renders report PDFs (WeasyPrint) to the `reports` volume, heartbeats |
 | `zap` | OWASP ZAP daemon (compose profile `dast`, `-Xmx1g`); on internal-only `engine` network, egress only via `egress` |
@@ -36,11 +36,10 @@ users, sessions (token hash), login_attempts, assessments, policy_versions (draf
 | Audit | Tampering, repudiation | Append-only for app role; every state change and export audited; secrets redacted as `[REDACTED]` |
 
 ## Rulings
-- Plan tasks regrouped into backend B1-B5 (sequential) and frontend F1-F3 (parallel, frontend/ only).
 - 404 for missing and no-access objects (no existence oracle).
-- MFA (TOTP) mandatory for all roles, one prompt per sign-in (OD-5 open).
-- OD-18: "no rule matches" defaults to approval required.
-- OD-11: password reset = admin creates temp password shown once; reset-mfa forces re-enrol.
+- MFA (TOTP) mandatory for all roles, one prompt per sign-in.
+- When no policy rule matches, the default outcome is "approval required".
+- Password reset: an admin creates a temporary password, shown once; resetting MFA forces re-enrolment.
 - Dev-only internal-target rule allows `testtarget` when `APP_ENV=dev`; loopback/link-local/metadata never overridable.
 
 ## Target policy lifecycle

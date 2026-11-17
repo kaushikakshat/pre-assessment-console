@@ -13,3 +13,6 @@ dist/
 0*_*.docx
 README.txt
 resumeClaude.txt
+.gstack/
+.claude/
+Pre-Assessment Console.html
