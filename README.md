@@ -85,3 +85,7 @@ docker-compose exec -T worker python /app/scripts/e2e_phase3.py  # end-to-end sc
 - [API reference](docs/API.md)
 - [Design system](DESIGN_SYSTEM.md)
 - [Backlog](docs/BACKLOG.md)
+
+## License
+
+[MIT](LICENSE)

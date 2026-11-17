@@ -12,14 +12,20 @@
 |---|---|
 | `web` | Serves the SPA, proxies `/api` to `api` |
 | `api` | Auth (argon2 + TOTP, sessions), permFor/can authorization, target validation, assessments/jobs/findings APIs, audit |
-| `worker` | Claims jobs, runs modules, writes redacted findings, heartbeats (stub until task B4) |
+| `migrate` | Runs `alembic upgrade head` as the DB owner, then exits; `api` and `worker` start after it |
+| `worker` | Claims jobs, runs the profile's modules, writes redacted findings, renders report PDFs (WeasyPrint) to the `reports` volume, heartbeats |
 | `zap` | OWASP ZAP daemon (compose profile `dast`, `-Xmx1g`); on internal-only `engine` network, egress only via `egress` |
 | `egress` | Guard proxy (`python -m app.egress`): ipguard + scope on every connection; proxy on 3128, control API on 3129 (token-gated; zap can reach it on `engine` but has no token); on `engine` + `outbound` only (not `default`), so api/db/web cannot reach it; no published ports |
 | `db` | System of record, queue, audit |
 | `testtarget` | Intentionally weak nginx demo target (dev only; compose profile `dev`) |
+| `testportal` | Small portal with planted flaws and test accounts, for signed-in and access-control checks (dev only; profile `dev`) |
+
+## Scan profiles
+- **Quick**: `reach`, `ports` (nmap, validated IP only), `tls`, `headers`, `exposed`, `finger`. Runs without ZAP.
+- **Pre-Assessment** and **Deep**: Quick plus crawling, signed-in testing (`auth`), access control, API, CMS and wordlist checks, and a ZAP scan (`dast`). Each has a time budget, request cap and rate limit in `scheduler_config` (defaults: 30 min / 5,000 requests and 180 min / 50,000, both 10 req/s). These profiles are shown as unavailable, with a reason, while the engine (ZAP + egress) is not healthy; they never produce placeholder results.
 
 ## Data model
-users, sessions (token hash), login_attempts, assessments, policy_versions, jobs, module_runs, findings (fingerprint dedupes across jobs), workers, scheduler_config (single row), audit_events. Display IDs (`U-001`, `A-0001`, `JOB-000001`, `F-0001`) come from Postgres sequences; integer PKs stay internal.
+users, sessions (token hash), login_attempts, assessments, policy_versions (draft / published / superseded), jobs, module_runs, findings (fingerprint dedupes across jobs), workers, scheduler_config (single row), audit_events, login_setups and credentials (test accounts; secrets sealed with the credentials public key), wordlists, reports. Display IDs (`U-001`, `A-0001`, `JOB-000001`, `F-0001`) come from Postgres sequences; integer PKs stay internal.
 
 ## Threat model (STRIDE-lite)
 | Surface | Main threats | Mitigations |
@@ -35,7 +41,6 @@ users, sessions (token hash), login_attempts, assessments, policy_versions, jobs
 - MFA (TOTP) mandatory for all roles, one prompt per sign-in (OD-5 open).
 - OD-18: "no rule matches" defaults to approval required.
 - OD-11: password reset = admin creates temp password shown once; reset-mfa forces re-enrol.
-- `pre`/`deep` profiles and non-Quick modules are `available: false` with a reason; no placeholder results.
 - Dev-only internal-target rule allows `testtarget` when `APP_ENV=dev`; loopback/link-local/metadata never overridable.
 
 ## Target policy lifecycle
@@ -43,4 +48,4 @@ users, sessions (token hash), login_attempts, assessments, policy_versions, jobs
 A policy change moves draft, validate (schema, conflicts, invariants, ports), dry run (every validated assessment re-evaluated under the published and draft documents using DNS only), then publish. Publishing is one transaction: the old version is superseded, and any assessment whose outcome becomes stricter (allowed < approval < blocked) loses its validation and approval, returns to `draft`, and has its queued scans cancelled; running scans and looser outcomes are untouched. Rollback republishes an old document under a new label through the same path. Drafts are never used for validation: `validate` always reads the published version, and refuses to store a result if that version was superseded mid-validation.
 
 ## Run locally
-Set `ZAP_API_KEY`, `EGRESS_TOKEN` and the credential keypair (`python -m app.cli gen-credential-keys`) in `.env`; add `--profile dast` to start ZAP. `cp .env.example .env`, `docker-compose --profile dev up -d --build --scale worker=2`, then `docker-compose exec api python -m app.cli create-admin --email ... --name ...`. Only the UI is published (:8080); the API is reached through it at http://localhost:8080/api. Tests: `docker-compose --profile test run --rm test` (uses a separate `preassess_test` database).
+See the [README quick start](../README.md#quick-start). Only the UI is published (:8080); the API is reached through it at http://localhost:8080/api. Backend tests use a separate `preassess_test` database.
