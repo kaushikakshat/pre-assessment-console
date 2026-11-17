@@ -20,7 +20,7 @@ from app.models import AuditEvent, Credential, LoginSetup as SetupRow, PolicyVer
 from app.targets import ipguard
 from app.targets.login import LoginSetup, perform_login
 from app.targets.safe_http import SafeClient
-from app.targets.validate import _internal, first_rule, parse_ports
+from app.targets.validate import _internal, first_rule, parse_ports, parse_target
 
 router = APIRouter(prefix="/assessments")
 MAX_ACCOUNTS = 10
@@ -28,7 +28,7 @@ TEST_SECONDS = 20
 TEST_GAP = timedelta(seconds=30)
 STYLES = ("single", "two-step")
 LOCKED_REASON = "Account appears locked"
-OUT_OF_SCOPE = "The login page must be on an in-scope host."
+OUT_OF_SCOPE = "The sign-in page must be on the target host."
 
 
 class SetupIn(BaseModel):
@@ -53,8 +53,8 @@ class AccountIn(BaseModel):
     bypass_code: str | None = None  # used for this test only, never stored
 
 
-def scope_hosts(a) -> set[str]:
-    return {ipguard.normalize_host(h) for h in re.split(r"[,\s]+", a.hosts.strip()) if h}
+def target_host(a) -> str:
+    return parse_target(a.target).host
 
 
 def make_client(db, a, hosts: set[str]) -> SafeClient:
@@ -75,12 +75,12 @@ def make_client(db, a, hosts: set[str]) -> SafeClient:
 
 
 def _url_ok(a, u: str) -> str | None:
-    """None when the URL is on an in-scope host and permitted port and not an excluded path, else the message."""
+    """None when the URL is on the target host and permitted port and not an excluded path, else the message."""
     try:
         x = httpx.URL(u)
         if x.scheme not in ("http", "https") or not x.host or len(u) > 2000:
             return "Enter a full http or https URL."
-        if ipguard.normalize_host(x.host) not in scope_hosts(a):
+        if ipguard.normalize_host(x.host) != target_host(a):
             return OUT_OF_SCOPE
         if (x.port or (443 if x.scheme == "https" else 80)) not in parse_ports(a.ports):
             return "The login page must use a permitted port."
@@ -219,11 +219,11 @@ def _begin_test(db, user, a, b: AccountIn, c: Credential | None):
 
 
 def _run_test(db, a, setup, b: AccountIn) -> str:
-    hosts = scope_hosts(a)
+    hosts = {target_host(a)}
     client = make_client(db, a, hosts)  # DB reads done; end the transaction before network I/O
     db.commit()
     with client:
-        return perform_login(client, setup, b.username, b.password, time.monotonic() + TEST_SECONDS).reason
+        return perform_login(client, setup, b.username, b.password, time.monotonic() + TEST_SECONDS, target_host(a)).reason
 
 
 def _store(c: Credential, b: AccountIn, reason: str | None):

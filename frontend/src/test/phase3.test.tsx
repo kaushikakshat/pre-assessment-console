@@ -82,7 +82,7 @@ describe('sign-in tab', () => {
   it('setup PUT omits bypass_code unless typed; unmapped 422 fields reach a banner', async () => {
     let n = 0;
     const calls = mockApi({ ...base, '/catalog': catalog(), '/assessments/A-0001/signin': { setup: setup({ style: 'two-step' }), accounts: [] },
-      'PUT /assessments/A-0001/signin': () => (n++ ? json(200, setup()) : json(422, { detail: { fields: { otp_url: 'The login page must be on an in-scope host.', port: 'Port not permitted.' } } })) });
+      'PUT /assessments/A-0001/signin': () => (n++ ? json(200, setup()) : json(422, { detail: { fields: { otp_url: 'The sign-in page must be on the target host.', port: 'Port not permitted.' } } })) });
     mount('/assessments/A-0001?tab=signin');
     const user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: 'Save sign-in setup' }));

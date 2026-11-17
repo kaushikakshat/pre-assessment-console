@@ -74,10 +74,27 @@ def test_failed_test_login_is_recorded(env):
     assert r.json()["test_result"] == "The login page did not show the signed-in marker" and r.json()["last_test"] == "failed"
 
 
+def test_signin_only_on_target_host_and_only_it_is_resolved(env, monkeypatch):
+    o1, _, _, aid, base, _ = env
+    validate(aid)
+    with SessionLocal() as db, db.begin():
+        db.execute(Assessment.__table__.update().where(Assessment.display_id == aid).values(hosts="portal.test, other.test"))
+    other = base.replace("portal", "other")
+    r = o1.put(f"/api/assessments/{aid}/signin", json=setup_body(base, login_url=other + "/login"))
+    assert r.status_code == 422 and r.json()["detail"]["fields"] == {"login_url": "The sign-in page must be on the target host."}
+    assert o1.put(f"/api/assessments/{aid}/signin", json=setup_body(base)).status_code == 200
+    seen = []
+    orig = signin.make_client
+    monkeypatch.setattr(signin, "make_client", lambda db, a, hosts: seen.append(hosts) or orig(db, a, hosts))
+    r = o1.post(f"/api/assessments/{aid}/accounts", json={"role_label": "A", "username": USER, "password": PW,
+                                                          "test": True, "authorized": True})
+    assert r.status_code == 201 and seen == [{"portal.test"}]
+
+
 def test_login_url_out_of_scope_422(env):
     o1, _, _, aid, base, _ = env
     r = o1.put(f"/api/assessments/{aid}/signin", json=setup_body(base, login_url="http://evil.test/login"))
-    assert r.status_code == 422 and r.json()["detail"]["fields"] == {"login_url": "The login page must be on an in-scope host."}
+    assert r.status_code == 422 and r.json()["detail"]["fields"] == {"login_url": "The sign-in page must be on the target host."}
 
 
 def test_test_login_requires_authorized_and_allowed(env):

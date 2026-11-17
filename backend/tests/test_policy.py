@@ -47,7 +47,7 @@ def test_evaluate_outcome():
     assert evaluate_outcome("https://in.corp/", "Staging", "", pol, ["10.1.2.3"], "prod") == "allowed"
     assert evaluate_outcome("https://ok.com:9999/", "Staging", "", pol, ["93.184.216.34"], "prod") == "blocked"
     assert evaluate_outcome("https://ok.com/", "Staging", "", pol, ["127.0.0.1"], "prod") == "blocked"
-    assert evaluate_outcome("https://ok.com/", "Staging", "", pol, None, "prod") == "unresolved"
+    assert evaluate_outcome("https://ok.com/", "Staging", "", pol, None, "prod") == "unresolved"  # R-02 (cidr) could match
 
 def test_non_string_rule_id_is_a_schema_error():
     for bad in ([], {}):
@@ -63,7 +63,18 @@ def test_dns_failure_still_applies_deny_and_ports():
     assert ev("https://app.example.com/", doc(r("R-01", "deny"))) == "blocked"
     assert ev("https://app.example.com/", doc(r("R-01", "deny", "cidr", "10.0.0.0/8"))) == "unresolved"
     assert ev("https://app.example.com:9999/", doc()) == "blocked"
-    assert ev("https://app.example.com/", doc(r("R-01"))) == "unresolved"
+    assert ev("https://app.example.com/", doc(r("R-01"))) == "allowed"
+
+def test_dns_failure_is_exact_unless_an_ip_rule_could_come_first():
+    ev = lambda pol, **kw: evaluate_outcome("https://app.example.com/", "Staging", "", pol, None, kw.get("app", "prod"))
+    assert ev(doc(r("R-01", "allow", "domain", "app.example.com"))) == "allowed"
+    assert ev(doc(r("R-01", "allow", "domain", "app.example.com", internal=True), r("R-02", "deny", "cidr", "10.0.0.0/8"))) == "allowed"
+    assert ev(doc(r("R-01", "allow", "cidr", "10.0.0.0/8", internal=True), r("R-02", "allow", "domain", "app.example.com"))) == "unresolved"
+    assert ev(doc(r("R-01", "allow", "domain", "other.com"))) == "approval"  # no match, no ip/cidr rule
+    assert ev(doc(r("R-01", "allow", "domain", "other.com"), r("R-02", "allow", "cidr", "10.0.0.0/8", internal=True))) == "unresolved"
+    dev = r("R-01", "allow", "cidr", "10.0.0.0/8", internal=True, dev_only=True)
+    assert ev(doc(dev, r("R-02", "allow", "domain", "app.example.com"))) == "allowed"
+    assert ev(doc(dev, r("R-02", "allow", "domain", "app.example.com")), app="dev") == "unresolved"
 
 def test_schema_field_types():
     for bad, msg in [(r("R-01", note={"a": 1}), "note must be text"), (r("R-01", value=5), "value must be text"),

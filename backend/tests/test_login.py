@@ -23,7 +23,7 @@ def setup(srv, **kw):
 
 def run(srv, s, user="alice", pw="Secret!pw"):
     with client() as c:
-        return perform_login(c, s, user, pw, time.monotonic() + 20)
+        return perform_login(c, s, user, pw, time.monotonic() + 20, "portal.test")
 
 
 @pytest.fixture
@@ -66,7 +66,7 @@ def test_login_carries_hidden_csrf_field(single):
 
 def test_login_unreachable(single):
     srv, _ = single
-    assert run(srv, setup(srv, login_url="http://other.test/login")).reason == "Could not reach the login page"
+    assert run(srv, setup(srv, login_url="http://portal.test:1/login")).reason == "Could not reach the login page"
 
 
 def test_login_page_echoing_marker_is_not_success(single):
@@ -116,3 +116,11 @@ def test_login_never_logs_values(single, caplog):
     caplog.set_level(logging.DEBUG)
     run(single[0], setup(single[0]))
     assert "Secret!pw" not in caplog.text and CODE not in caplog.text and "alice" not in caplog.text
+
+
+def test_login_refuses_pages_off_the_target_host(single):
+    srv, h = single
+    base = f"http://portal.test:{srv.server_port}"
+    for kw in (dict(login_url=base.replace("portal", "other") + "/login"), dict(style="two-step", otp_url=base.replace("portal", "other") + "/otp")):
+        r = run(srv, setup(srv, **kw))
+        assert not r.ok and r.reason == "The sign-in page must be on the target host" and not h.seen

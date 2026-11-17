@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 
 import httpx
 
+from app.targets import ipguard
 from app.targets.safe_http import BlockedAddress, RequestCapExceeded, SafeClient, ScopeError
 
 LOCKED = re.compile(r"(?i)\b(account|user)\s+(is\s+)?locked\b|too many (failed )?attempts")
@@ -98,9 +99,16 @@ def _locked(r) -> bool:
     return r.status_code == 423 or bool(LOCKED.search(r.text))
 
 
-def perform_login(client: SafeClient, setup: LoginSetup, username: str, password: str, deadline: float) -> LoginResult:
+def perform_login(client: SafeClient, setup: LoginSetup, username: str, password: str, deadline: float,
+                  host: str) -> LoginResult:
+    """host is the validated target host: the login and OTP pages must be on it (checked before any request)."""
     jar: dict[str, str] = {}
     fail = lambda why: LoginResult(False, why, {})  # noqa: E731
+    try:
+        if any(ipguard.normalize_host(httpx.URL(u).host) != host for u in (setup.login_url, setup.otp_url) if u):
+            return fail("The sign-in page must be on the target host")
+    except (httpx.InvalidURL, ValueError):
+        return fail("Could not reach the login page")
     two = setup.style == "two-step"
     try:
         r, _ = _fetch(client, "GET", setup.login_url, jar, deadline)

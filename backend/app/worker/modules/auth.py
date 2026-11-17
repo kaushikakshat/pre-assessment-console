@@ -39,7 +39,7 @@ def login_all(ctx, deadline, ids=None, attempts=ATTEMPTS) -> tuple[dict, list, s
             continue
         why = "The credentials could not be read" if user is None else ""
         for _ in range(attempts if user is not None else 0):
-            res = perform_login(ctx.client, setup, user, pw, deadline)
+            res = perform_login(ctx.client, setup, user, pw, deadline, ctx.host)
             if res.ok:
                 sessions[cid], why = "; ".join(f"{k}={v}" for k, v in res.cookies.items()), ""
                 break
