@@ -1,6 +1,6 @@
 """WordPress, Drupal and Joomla detection, end-of-life core versions, WordPress plugins and vulnerable JS libraries."""
 import re
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -18,7 +18,7 @@ FAILS = (httpx.HTTPError, OSError, BlockedAddress)
 
 
 def _try(ctx, path, failed):
-    if excluded(ctx.run_ctx, ctx.url.rstrip("/") + path):
+    if excluded(ctx.run_ctx, urljoin(ctx.url, path)):
         return None
     try:
         r = ctx.get(path)

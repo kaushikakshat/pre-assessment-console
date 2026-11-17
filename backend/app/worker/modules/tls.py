@@ -86,8 +86,8 @@ def run(ctx) -> ModuleResult:
                 out.append(_finding(ctx, "medium", f"Server accepts outdated {name}", f"The server completed a handshake using {name}.",
                                     "Old protocol versions have known weaknesses.", f"Disable {name} and allow TLS 1.2 or newer only.",
                                     f"{evidence}\nNegotiated: {s.version()}"))
-        except ssl.SSLError:
-            pass  # offered and refused
+        except (ssl.SSLError, ConnectionResetError):
+            pass  # refused: a handshake alert, or the server resetting the old-protocol hello
         except OSError:  # timeout or connection error: the probe failed, the server did not refuse
             failed += 1
     deep, tool, note = ctx.run_ctx.get("profile") in ("pre", "deep"), None, ""

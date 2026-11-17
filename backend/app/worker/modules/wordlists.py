@@ -81,7 +81,7 @@ def _rate(ctx) -> int:
 def discover(ctx, keys):
     """Paths from Discovery/ lists. -> (drafts, status, untested) with status 'ok' | 'blocked' | 'stopped'."""
     paths = list(dict.fromkeys("/" + ln.strip().lstrip("/") for k in keys if k.startswith("Discovery/") for ln in read(k)))
-    paths = [p for p in paths if not excluded(ctx.run_ctx, ctx.url.rstrip("/") + p)]  # excluded: not requested, not untested
+    paths = [p for p in paths if not excluded(ctx.run_ctx, urljoin(ctx.url, p))]  # excluded: not requested, not untested
     base_path = "/" + secrets.token_hex(8)
     try:
         baseline = ctx.get(base_path)

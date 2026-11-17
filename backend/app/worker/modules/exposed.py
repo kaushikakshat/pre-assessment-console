@@ -1,4 +1,5 @@
 import re
+from urllib.parse import urljoin
 
 import httpx
 
@@ -33,7 +34,7 @@ SECURITY_TXT = "/.well-known/security.txt"
 def run(ctx) -> ModuleResult:
     out, errors, blocked = [], 0, False
     for path, (match, sev, what, show) in SIGNATURES.items():
-        if access.excluded(ctx.run_ctx, ctx.url.rstrip("/") + path):  # excluded: not requested, not a failure
+        if access.excluded(ctx.run_ctx, urljoin(ctx.url, path)):  # excluded: not requested, not a failure
             continue
         try:
             r = ctx.get(path)
@@ -62,7 +63,7 @@ def run(ctx) -> ModuleResult:
     try:
         if blocked:
             raise Blocked
-        if access.excluded(ctx.run_ctx, ctx.url.rstrip("/") + SECURITY_TXT):
+        if access.excluded(ctx.run_ctx, urljoin(ctx.url, SECURITY_TXT)):
             has = True  # not checked, so do not claim it is missing
         else:
             r = ctx.get(SECURITY_TXT)
