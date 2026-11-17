@@ -5,7 +5,7 @@ import httpx
 from app.targets.safe_http import BlockedAddress
 from app.worker.redact import build_evidence, redact
 
-from . import wordlists
+from . import access, wordlists
 from .base import REFS, Blocked, FindingDraft, ModuleResult, location
 
 _ENV = re.compile(rb"(?m)^[A-Z_]+=")
@@ -33,6 +33,8 @@ SECURITY_TXT = "/.well-known/security.txt"
 def run(ctx) -> ModuleResult:
     out, errors, blocked = [], 0, False
     for path, (match, sev, what, show) in SIGNATURES.items():
+        if access.excluded(ctx.run_ctx, ctx.url.rstrip("/") + path):  # excluded: not requested, not a failure
+            continue
         try:
             r = ctx.get(path)
         except Blocked:
@@ -60,8 +62,11 @@ def run(ctx) -> ModuleResult:
     try:
         if blocked:
             raise Blocked
-        r = ctx.get(SECURITY_TXT)
-        has = r.status_code == 200 and b"Contact:" in r.content
+        if access.excluded(ctx.run_ctx, ctx.url.rstrip("/") + SECURITY_TXT):
+            has = True  # not checked, so do not claim it is missing
+        else:
+            r = ctx.get(SECURITY_TXT)
+            has = r.status_code == 200 and b"Contact:" in r.content
     except Blocked:
         blocked, has = True, True
     except (httpx.HTTPError, OSError, TimeoutError, BlockedAddress):

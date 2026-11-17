@@ -4,7 +4,6 @@ import contextlib
 import hashlib
 import logging
 import os
-import re
 import signal
 import socket
 import ssl
@@ -225,7 +224,7 @@ def run_job(job_id, worker, halt, resolver=socket.getaddrinfo):
             load_accounts(db, a, run_ctx, job.credential_ids or ())
         setup = db.get(LoginSetup, a.id)
         login_urls = [u for u in (setup.login_url, setup.otp_url) if u] if setup else []  # never crawled, fuzzed or attacked
-        run_ctx["exclude"] = [re.escape(u) + ".*" for u in login_urls]
+        run_ctx["exclude"] = stages.excluded_regexes(a, login_urls)  # whole job, so non-engine modules honour it too
         limits = db.scalar(select(SchedulerConfig.profile_limits).where(SchedulerConfig.id == 1)) or {}
         run_ctx["request_cap"] = limits.get(job.profile, {}).get("request_cap", REQUEST_CAP)
         run_ctx["rate_per_s"] = limits.get(job.profile, {}).get("rate_per_s", 10)

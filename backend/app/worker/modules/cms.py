@@ -8,6 +8,7 @@ from app.targets.safe_http import BlockedAddress, RequestCapExceeded
 from app.worker import advisories
 from app.worker.redact import build_evidence
 
+from .access import excluded
 from .base import REFS, Blocked, FindingDraft, ModuleResult, location
 
 _GEN = re.compile(r"""(?is)<meta[^>]+name=["']generator["'][^>]+content=["']([^"']+)""")
@@ -16,15 +17,18 @@ MAX_PAGES, MAX_PLUGINS = 15, 10
 FAILS = (httpx.HTTPError, OSError, BlockedAddress)
 
 
-def _try(ctx, path):
+def _try(ctx, path, failed):
+    if excluded(ctx.run_ctx, ctx.url.rstrip("/") + path):
+        return None
     try:
         r = ctx.get(path)
         return r if r.status_code == 200 else None
     except FAILS:
+        failed.append(path)
         return None
 
 
-def _detect(ctx, home) -> tuple[str | None, str | None]:
+def _detect(ctx, home, failed) -> tuple[str | None, str | None]:
     """-> (cms, version or None)."""
     text = home.text
     g = _GEN.search(text)
@@ -34,23 +38,23 @@ def _detect(ctx, home) -> tuple[str | None, str | None]:
     if m := re.match(r"(?i)Drupal\s+([\d.]+)", gen):
         return "drupal", m.group(1)
     if gen.lower().startswith("joomla"):
-        r = _try(ctx, "/administrator/manifests/files/joomla.xml")
+        r = _try(ctx, "/administrator/manifests/files/joomla.xml", failed)
         v = re.search(r"<version>([\d.]+)</version>", r.text) if r else None
         return "joomla", v.group(1) if v else None
-    if (r := _try(ctx, "/readme.html")) and (m := re.search(r"(?is)WordPress.*?Version\s+([\d.]+)", r.text[:6000])):
+    if (r := _try(ctx, "/readme.html", failed)) and (m := re.search(r"(?is)WordPress.*?Version\s+([\d.]+)", r.text[:6000])):
         return "wordpress", m.group(1)
-    if (r := _try(ctx, "/wp-json/")) and '"namespaces"' in r.text:
+    if (r := _try(ctx, "/wp-json/", failed)) and '"namespaces"' in r.text:
         return "wordpress", None
-    if (r := _try(ctx, "/CHANGELOG.txt")) and (m := re.match(r"(?s)\s*Drupal\s+([\d.]+)", r.text)):
+    if (r := _try(ctx, "/CHANGELOG.txt", failed)) and (m := re.match(r"(?s)\s*Drupal\s+([\d.]+)", r.text)):
         return "drupal", m.group(1)
     return None, None
 
 
 def run(ctx) -> ModuleResult:
-    out, partial, blocked = [], False, False
+    out, partial, blocked, failed = [], False, False, []
     try:
         home = ctx.get()
-        cms, ver = _detect(ctx, home)
+        cms, ver = _detect(ctx, home, failed)
         if cms:
             out.append(FindingDraft(
                 "info", "confirmed", f"{cms.capitalize()} detected" + (f" (version {ver})" if ver else ""), ctx.host,
@@ -66,9 +70,12 @@ def run(ctx) -> ModuleResult:
         bodies = {ctx.url: home}
         slugs = set(_PLUGIN.findall(home.text))
         for u in pages[1:]:
+            if excluded(ctx.run_ctx, u):
+                continue
             try:
                 r = ctx.client.get(u, deadline=ctx.deadline)
             except FAILS:
+                failed.append(u)
                 continue
             if r.status_code == 200 and "html" in r.headers.get("content-type", "html").lower():
                 bodies[u] = r
@@ -79,7 +86,7 @@ def run(ctx) -> ModuleResult:
                 out.append(d)
         if cms == "wordpress":
             for slug in sorted(slugs)[:MAX_PLUGINS]:
-                r = _try(ctx, f"/wp-content/plugins/{slug}/readme.txt")
+                r = _try(ctx, f"/wp-content/plugins/{slug}/readme.txt", failed)
                 v = re.search(r"(?im)^Stable tag:\s*([\w.]+)", r.text) if r else None
                 if v:
                     out.append(FindingDraft(
@@ -99,4 +106,6 @@ def run(ctx) -> ModuleResult:
         return ModuleResult("inconclusive", f"Target rate-limited or blocked the requests. {note}", out)
     if partial:
         return ModuleResult("completed-warnings", f"Stopped at the request limit. {note}", out)
+    if failed:
+        return ModuleResult("completed-warnings", f"{len(failed)} request(s) failed and were not checked. {note}", out)
     return ModuleResult("completed", f"{len(out)} finding(s). {note}", out)

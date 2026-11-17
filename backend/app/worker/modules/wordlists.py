@@ -17,6 +17,7 @@ from app.targets.safe_http import BlockedAddress, RequestCapExceeded
 from app.worker.redact import build_evidence, redact
 from app.worker.similarity import SAME, same_page
 
+from .access import excluded
 from .base import REFS, Blocked, FindingDraft, location, looks_blocked
 from .crawl import SECRET_FIELD, SENSITIVE_PATH
 
@@ -80,6 +81,7 @@ def _rate(ctx) -> int:
 def discover(ctx, keys):
     """Paths from Discovery/ lists. -> (drafts, status, untested) with status 'ok' | 'blocked' | 'stopped'."""
     paths = list(dict.fromkeys("/" + ln.strip().lstrip("/") for k in keys if k.startswith("Discovery/") for ln in read(k)))
+    paths = [p for p in paths if not excluded(ctx.run_ctx, ctx.url.rstrip("/") + p)]  # excluded: not requested, not untested
     base_path = "/" + secrets.token_hex(8)
     try:
         baseline = ctx.get(base_path)
