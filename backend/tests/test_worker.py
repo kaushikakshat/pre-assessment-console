@@ -162,6 +162,19 @@ def test_finding_text_fields_are_redacted_and_fingerprint_uses_redacted(setup):
         assert "admin@corp.com" not in blob and "abc123" not in blob and "abc.def" not in blob and "[REDACTED]" in f.title
 
 
+def test_location_and_references_are_redacted(setup):
+    w, aid, uid, fakes = setup
+    d = draft()
+    d.location, d.references = {"kind": "URL", "url": "https://t/cb?token=abc123"}, ["https://t/r?token=abc123"]
+    fakes["headers"] = lambda ctx: ModuleResult("completed", "ok", [d])
+    jid = add_job(aid, uid)
+    claim(w)
+    run(jid, w)
+    with SessionLocal() as db:
+        (f,) = db.query(Finding).filter_by(assessment_id=aid).all()
+        assert "abc123" not in str(f.location) + str(f.references) and f.location["kind"] == "URL"
+
+
 def test_wordlist_seed_keeps_admin_flag(tmp_path):
     from sqlalchemy import text
     from app.worker.modules import wordlists

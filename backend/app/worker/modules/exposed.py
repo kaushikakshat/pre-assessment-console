@@ -49,7 +49,7 @@ def run(ctx) -> ModuleResult:
         body = r.content if show else None
         ev = build_evidence("GET", ctx.url.rstrip("/") + path, 200, r.headers, body, ("content-type", "content-length"))
         if path == "/.env":  # values are secrets whatever their key name
-            ev = re.sub(r"(?m)^([A-Z_]+)=.*$", r"\1=[REDACTED]", ev)
+            ev = re.sub(r"(?m)^([\w.-]+)\s*=.*$", r"\1=[REDACTED]", ev)
         if not show:
             ev += "\n\nResponse body not stored, to avoid keeping sensitive content."
         out.append(FindingDraft(

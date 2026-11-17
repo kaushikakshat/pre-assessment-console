@@ -57,7 +57,7 @@ def make_ctx(port, scheme="http", **kw):
 WEAK = {"/": (200, [("Server", "nginx/1.18.0"), ("X-Powered-By", "PHP/7.4.3"), ("Set-Cookie", "sessionid=abc123; Path=/"),
                     ("Set-Cookie", "ok=1; Secure; HttpOnly; SameSite=Lax")],
               b'<html><meta name="generator" content="WordPress 5.8"></html>'),
-        "/.env": (200, [], b"DB_PASSWORD=hunter2\nAPI_KEY=sk_test_123\nPLAIN=value\n"),
+        "/.env": (200, [], b"DB_PASSWORD=hunter2\nAPI_KEY=sk_test_123\nPLAIN=value\nstripe=sk_live_x\n"),
         "/.git/HEAD": (200, [], b"ref: refs/heads/main\n"),
         "/phpinfo.php": (200, [], b"<html>soft 404 page</html>"),
         "/.DS_Store": (200, [], b"\x00\x00\x00\x01Bud1xxxx"),
@@ -89,6 +89,7 @@ def test_exposed_module_signatures_and_redaction(serve):
     assert set(by) == {"/.env", "/.git/HEAD", "/.DS_Store", "/backup.sql", "/.well-known/security.txt"}  # phpinfo soft-404 ignored
     assert by["/.env"].severity == "high" and by["/.git/HEAD"].severity == "high" and by["/backup.sql"].severity == "high"
     assert "hunter2" not in by["/.env"].evidence and "PLAIN=value" not in by["/.env"].evidence
+    assert "sk_live_x" not in by["/.env"].evidence and "stripe=[REDACTED]" in by["/.env"].evidence
     assert "CREATE TABLE" not in by["/backup.sql"].evidence and "ref: refs/heads/main" in by["/.git/HEAD"].evidence
     assert by["/.well-known/security.txt"].severity == "info" and r.state == "completed"
     ok = exposed.run(make_ctx(serve({"/.well-known/security.txt": (200, [], b"Contact: mailto:a@b.c")})))
