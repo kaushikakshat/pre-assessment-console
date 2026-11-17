@@ -7,6 +7,7 @@ import httpx
 from app.targets.safe_http import BlockedAddress, RequestCapExceeded
 from app.worker.redact import build_evidence, redact
 
+from .access import excluded
 from .base import REFS, Blocked, FindingDraft, ModuleResult, location, looks_blocked
 from .headers import cookie_findings
 
@@ -55,18 +56,19 @@ def _cors(ctx):
 
 
 def run(ctx) -> ModuleResult:
-    out, seen, blocked, partial = [], set(), False, False
+    out, seen, blocked, partial, failed = [], set(), False, False, 0
     rc = ctx.run_ctx
     # (url, cookie) for every crawled page, anonymous first; sessions are Cookie header values and never reach evidence
     targets = [(ctx.url, None)]
     for cred, urls in (rc.get("pages") or {}).items():
-        targets += [(u, (rc.get("sessions") or {}).get(cred)) for u in sorted(urls) if u != ctx.url]
+        targets += [(u, (rc.get("sessions") or {}).get(cred)) for u in sorted(urls) if u != ctx.url and not excluded(rc, u)]
     try:
         out += _cors(ctx)
         for url, cookie in targets[:MAX_PAGES]:
             try:
                 r = _fetch(ctx, url, cookie)
             except FAILS:
+                failed += 1
                 continue
             for d in cookie_findings(ctx, r, url):
                 if d.title not in seen:
@@ -105,4 +107,6 @@ def run(ctx) -> ModuleResult:
         return ModuleResult("inconclusive", "Target rate-limited or blocked the requests", out)
     if partial:
         return ModuleResult("completed-warnings", "Stopped at the request limit", out)
+    if failed:
+        return ModuleResult("completed-warnings", f"{failed} page request(s) failed and were not checked.", out)
     return ModuleResult("completed", f"Checked {min(len(targets), MAX_PAGES)} page(s); {len(out)} issue(s) found.", out)

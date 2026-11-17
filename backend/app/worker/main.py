@@ -4,7 +4,6 @@ import contextlib
 import hashlib
 import logging
 import os
-import re
 import signal
 import socket
 import ssl
@@ -91,9 +90,10 @@ def store_findings(db, job, assessment, module, drafts, seen=None):
             old.history = [*old.history, {"at": _now(), "by": "System", "text": f"Seen again in {job.display_id}"}]
         else:
             db.add(Finding(assessment_id=assessment.id, job_id=job.id, module=module, severity=d.severity,
-                           confidence=d.confidence, title=d.title, asset=d.asset, location=d.location,
+                           confidence=d.confidence, title=d.title, asset=d.asset,
+                           location={k: redact(v) if isinstance(v, str) else v for k, v in d.location.items()},
                            description=d.description, impact=d.impact, evidence=redact(d.evidence), reproduce=d.reproduce,
-                           remediation=d.remediation, references=d.references, fingerprint=fp, credential_id=cred,
+                           remediation=d.remediation, references=[redact(r) if isinstance(r, str) else r for r in d.references], fingerprint=fp, credential_id=cred,
                            history=[{"at": _now(), "by": "System", "text": f"Found in {job.display_id}"}]))
     db.flush()
 
@@ -190,6 +190,21 @@ def _gate(db, job_id, worker):
     return "blocked" if row.status != "active" else None
 
 
+def _stop_check(job_id, worker, halt, clock=time.monotonic, every=5.0):
+    """For ZAP waits: true once halted, or (checked at most every `every` s) the job is cancelled or its lease lost."""
+    last, hit = [None], [False]
+
+    def stop():
+        if halt.is_set() or hit[0]:
+            return True
+        if last[0] is None or clock() - last[0] >= every:
+            last[0] = clock()
+            with SessionLocal() as db:
+                hit[0] = _gate(db, job_id, worker) in ("lost", "cancelled")
+        return hit[0]
+    return stop
+
+
 def _end(db, job, worker, state, module_state, detail, excluded=(), seen=()):
     ok = db.execute(update(Job).where(Job.id == job.id, Job.lease_owner == worker, Job.state.in_(ACTIVE))
                     .values(state=state, ended_at=func.now(), lease_expires_at=None)).rowcount
@@ -225,7 +240,7 @@ def run_job(job_id, worker, halt, resolver=socket.getaddrinfo):
             load_accounts(db, a, run_ctx, job.credential_ids or ())
         setup = db.get(LoginSetup, a.id)
         login_urls = [u for u in (setup.login_url, setup.otp_url) if u] if setup else []  # never crawled, fuzzed or attacked
-        run_ctx["exclude"] = [re.escape(u) + ".*" for u in login_urls]
+        run_ctx["exclude"] = stages.excluded_regexes(a, login_urls)  # whole job, so non-engine modules honour it too
         limits = db.scalar(select(SchedulerConfig.profile_limits).where(SchedulerConfig.id == 1)) or {}
         run_ctx["request_cap"] = limits.get(job.profile, {}).get("request_cap", REQUEST_CAP)
         run_ctx["rate_per_s"] = limits.get(job.profile, {}).get("rate_per_s", 10)
@@ -247,6 +262,8 @@ def run_job(job_id, worker, halt, resolver=socket.getaddrinfo):
             if key in ENGINE_MODULES and key in MODULES and not engine_down and not bad_cert and "session" not in run_ctx:
                 try:
                     s = stack.enter_context(stages.EngineSession(job, a, scope, extra_exclude=login_urls, ttl_s=(budget_s * 60 if budget_s else 3600) + 120))
+                    if s.zap:  # test fakes have none
+                        s.zap.should_stop = _stop_check(job_id, worker, halt)
                     run_ctx.update(session=s, zap=s.zap, exclude=s.exclude)
                 except (EngineDown, EngineError):
                     engine_down = True

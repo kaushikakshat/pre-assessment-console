@@ -1,5 +1,6 @@
 import http.server
 import json
+import ssl
 import threading
 import time
 from pathlib import Path
@@ -302,3 +303,66 @@ def test_testssl_groups_dedupes_and_caps_severity(monkeypatch, serve):
     got = {d.title: d for d in drafts}
     assert set(got) == {"TLS weakness: cipher", "TLS weakness: cipherlist", "TLS weakness: BEAST"}
     assert {d.severity for d in drafts} == {"high", "medium"} and "cipher-tls1_2_xc019" in got["TLS weakness: cipher"].evidence
+
+
+class Seen(http.server.BaseHTTPRequestHandler):
+    paths = []
+
+    def do_GET(self):
+        Seen.paths.append(self.path)
+        body = b"A=b\n"
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    log_message = lambda *a: None  # noqa: E731
+
+
+@pytest.mark.parametrize("pattern", ["/.env", "/admin/*"])
+def test_exposed_and_discovery_skip_excluded_urls(pattern, monkeypatch):
+    from types import SimpleNamespace
+    from app.engine import stages
+    Seen.paths = []
+    s = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Seen)
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+    monkeypatch.setattr(wordlists, "read", lambda k, root=None: ["admin/x", ".env", "other"])
+    rc = {"exclude": stages.excluded_regexes(SimpleNamespace(exclusions=pattern)), "wordlists": ["Discovery/c.txt"], "rate_per_s": 100}
+    try:
+        r = exposed.run(make_ctx(s.server_port, run_ctx=rc))
+    finally:
+        s.shutdown()
+    prefix = pattern.rstrip("*")
+    assert Seen.paths and not any(p.startswith(prefix) for p in Seen.paths)
+    assert not any(f.location["path"].startswith(prefix) for f in r.findings)
+
+
+def test_config_failed_fetch_ends_with_warnings(serve):
+    ctx = make_ctx(serve({"/": page(b"ok")}))
+    ctx.run_ctx["pages"] = {None: {ctx.url + "a"}}
+    real = ctx.client.request
+    ctx.client.request = lambda m, u, **kw: (_ for _ in ()).throw(ConnectionError("boom")) if u.endswith("/a") else real(m, u, **kw)
+    r = config.run(ctx)
+    assert r.state == "completed-warnings" and "1 page request(s) failed" in r.detail
+
+
+def test_cms_failed_fetch_ends_with_warnings(serve):
+    ctx = make_ctx(serve({"/": page(b"<html></html>")}))
+    real = ctx.get
+    ctx.get = lambda path=None: (_ for _ in ()).throw(ConnectionError("boom")) if path == "/readme.html" else real(path)
+    r = cms.run(ctx)
+    assert r.state == "completed-warnings" and "failed" in r.detail
+
+
+def test_tls_old_protocol_timeout_is_not_refused(serve, cert, monkeypatch):
+    port = serve({}, cert("app.test"))
+    monkeypatch.setattr(tls, "_can_offer", lambda c: True)
+    real = tls._connect
+
+    def connect(ctx, ip, c):
+        if c.maximum_version in (ssl.TLSVersion.TLSv1, ssl.TLSVersion.TLSv1_1):
+            raise TimeoutError("timed out")
+        return real(ctx, ip, c)
+    monkeypatch.setattr(tls, "_connect", connect)
+    r = tls.run(make_ctx(port, "https"))
+    assert r.state == "completed-warnings" and "probe(s) failed" in r.detail

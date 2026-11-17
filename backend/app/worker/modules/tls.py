@@ -71,7 +71,7 @@ def run(ctx) -> ModuleResult:
                                 f"{evidence}\nVerification: {e.verify_message}"))
         with _connect(ctx, ip, _lenient()) as s:  # still learn the protocol version
             version = s.version()
-    skipped = False
+    skipped, failed = False, 0
     for name, v in (("TLS 1.0", ssl.TLSVersion.TLSv1), ("TLS 1.1", ssl.TLSVersion.TLSv1_1)):
         try:
             c = _lenient(v)
@@ -86,14 +86,18 @@ def run(ctx) -> ModuleResult:
                 out.append(_finding(ctx, "medium", f"Server accepts outdated {name}", f"The server completed a handshake using {name}.",
                                     "Old protocol versions have known weaknesses.", f"Disable {name} and allow TLS 1.2 or newer only.",
                                     f"{evidence}\nNegotiated: {s.version()}"))
-        except (ssl.SSLError, OSError):
-            pass  # offered and refused
+        except (ssl.SSLError, ConnectionResetError):
+            pass  # refused: a handshake alert, or the server resetting the old-protocol hello
+        except OSError:  # timeout or connection error: the probe failed, the server did not refuse
+            failed += 1
     deep, tool, note = ctx.run_ctx.get("profile") in ("pre", "deep"), None, ""
     if deep:
         found, tool, note = _testssl(ctx, ip)
         out += found
-    if skipped or note:
-        return ModuleResult("completed-warnings", ". ".join(x for x in ("Outdated protocol check could not run" if skipped else "", note) if x), out, tool)
+    if skipped or failed or note:
+        return ModuleResult("completed-warnings", ". ".join(x for x in (
+            "Outdated protocol check could not run" if skipped else "",
+            f"{failed} outdated protocol probe(s) failed and were not checked" if failed else "", note) if x), out, tool)
     return ModuleResult("completed", f"Checked certificate and protocol versions (negotiated {version}){' and ran testssl.sh' if deep else ''}; {len(out)} issue(s).", out, tool)
 
 

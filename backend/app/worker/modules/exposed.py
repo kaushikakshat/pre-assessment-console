@@ -1,11 +1,12 @@
 import re
+from urllib.parse import urljoin
 
 import httpx
 
 from app.targets.safe_http import BlockedAddress
 from app.worker.redact import build_evidence, redact
 
-from . import wordlists
+from . import access, wordlists
 from .base import REFS, Blocked, FindingDraft, ModuleResult, location
 
 _ENV = re.compile(rb"(?m)^[A-Z_]+=")
@@ -33,6 +34,8 @@ SECURITY_TXT = "/.well-known/security.txt"
 def run(ctx) -> ModuleResult:
     out, errors, blocked = [], 0, False
     for path, (match, sev, what, show) in SIGNATURES.items():
+        if access.excluded(ctx.run_ctx, urljoin(ctx.url, path)):  # excluded: not requested, not a failure
+            continue
         try:
             r = ctx.get(path)
         except Blocked:
@@ -46,7 +49,7 @@ def run(ctx) -> ModuleResult:
         body = r.content if show else None
         ev = build_evidence("GET", ctx.url.rstrip("/") + path, 200, r.headers, body, ("content-type", "content-length"))
         if path == "/.env":  # values are secrets whatever their key name
-            ev = re.sub(r"(?m)^([A-Z_]+)=.*$", r"\1=[REDACTED]", ev)
+            ev = re.sub(r"(?m)^([\w.-]+)\s*=.*$", r"\1=[REDACTED]", ev)
         if not show:
             ev += "\n\nResponse body not stored, to avoid keeping sensitive content."
         out.append(FindingDraft(
@@ -60,8 +63,11 @@ def run(ctx) -> ModuleResult:
     try:
         if blocked:
             raise Blocked
-        r = ctx.get(SECURITY_TXT)
-        has = r.status_code == 200 and b"Contact:" in r.content
+        if access.excluded(ctx.run_ctx, urljoin(ctx.url, SECURITY_TXT)):
+            has = True  # not checked, so do not claim it is missing
+        else:
+            r = ctx.get(SECURITY_TXT)
+            has = r.status_code == 200 and b"Contact:" in r.content
     except Blocked:
         blocked, has = True, True
     except (httpx.HTTPError, OSError, TimeoutError, BlockedAddress):

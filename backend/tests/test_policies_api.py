@@ -179,7 +179,7 @@ def test_dry_run_requires_validation_and_lists_changes(adm, monkeypatch):
     x = rows[disp_id(a)]
     assert (x["published"], x["draft"], x["changed"], x["reset"]) == ("approval", "blocked", True, True)
     y = rows[disp_id(g)]
-    assert y["draft"] == "unresolved" and not y["reset"]
+    assert y["draft"] == "approval" and not y["reset"]
 
 
 def test_publish_requires_current_dry_run(adm, monkeypatch):
@@ -208,6 +208,21 @@ def test_publish_resets_stricter_and_cancels_queued_only(adm, monkeypatch):
     acts = {e["action"] for e in adm.get("/api/admin/audit?area=policy").json()}
     assert {"dry-run", "publish"} <= acts
     assert "policy-reset" in {e["action"] for e in adm.get("/api/admin/audit?area=validation").json()}
+
+
+def test_publish_resets_stricter_when_dns_fails_unless_cidr_rule_first(adm, monkeypatch):
+    dns(monkeypatch)
+    aid, _ = validated_assessment("allowed", host="gone.example.com")
+    go(adm, rules=[rule(5, match="cidr", value="10.0.0.0/8"), rule(6, outcome="approval", match="domain", value="gone.example.com")])
+    assert adm.post(P + "/draft/publish", json={"rev": 1}).json()["reset"] == 0
+    assert a_state(aid)[1]["outcome"] == "allowed"
+
+
+def test_publish_resets_stricter_when_dns_fails(adm, monkeypatch):
+    dns(monkeypatch)
+    aid, _ = validated_assessment("allowed", host="gone.example.com")
+    go(adm, rules=[rule(5, outcome="approval", match="domain", value="gone.example.com")])
+    assert adm.post(P + "/draft/publish", json={"rev": 1}).json()["reset"] == 1
 
 
 def test_publish_keeps_approved_when_not_stricter(adm, monkeypatch):

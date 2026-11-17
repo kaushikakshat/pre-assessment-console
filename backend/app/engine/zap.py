@@ -45,6 +45,7 @@ def normalize_path(path: str) -> str:
 class Zap:
     def __init__(self, base_url: str, api_key: str, *, poll: float = 1.0):
         self.base, self.poll, self._ctx, self._policies = base_url.rstrip("/"), poll, {}, set()
+        self.should_stop = lambda: False  # set by the worker: cancel / lost lease ends a wait early
         self._http = httpx.Client(timeout=30, headers={"X-ZAP-Api-Key": api_key})
 
     def _call(self, kind, path, **params):
@@ -98,13 +99,13 @@ class Zap:
             self._call("action", "replacer/action/removeRule", description=r["description"])
 
     def _wait(self, comp, scan_id, deadline) -> int:
-        """Polls until 100% or the deadline; on the deadline the scan is stopped and the partial progress returned."""
+        """Polls until 100%, the deadline or should_stop; then the scan is stopped and the partial progress returned."""
         pct = 0
         while True:
             pct = int(self._field(self._call("view", f"{comp}/view/status", scanId=scan_id), "status", "status"))
             if pct >= 100:
                 return 100
-            if time.monotonic() + self.poll >= deadline:
+            if time.monotonic() + self.poll >= deadline or self.should_stop():
                 self._call("action", f"{comp}/action/stop", scanId=scan_id)
                 return pct
             time.sleep(self.poll)

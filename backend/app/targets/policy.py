@@ -5,7 +5,7 @@ import json
 import re
 
 from app.targets import ipguard
-from app.targets.validate import _HOSTNAME, _check_addrs, _internal, first_rule, parse_ports, parse_target
+from app.targets.validate import _HOSTNAME, _check_addrs, _internal, _matches, first_rule, parse_ports, parse_target
 
 ENVS = ("Development", "Staging", "UAT", "Production")
 RANK = {"allowed": 0, "approval": 1, "blocked": 2}
@@ -173,7 +173,16 @@ def evaluate_outcome(target, env, ports_field, policy, addrs, app_env) -> str:
         p = parse_target(target)
     except ValueError:
         return "blocked"
-    unresolved = addrs is None
+    unresolved = False
+    if addrs is None:  # exact unless an ip/cidr rule (needs addresses) sits above the first rule that matches without them
+        for r in policy.get("rules", []):
+            if app_env != "dev" and r.get("dev_only"):
+                continue
+            if r.get("match") in ("ip", "cidr"):
+                unresolved = True
+                break
+            if _matches(r, p.host, [], env):
+                break
     addrs = addrs or []  # DNS failure: ip/cidr rules cannot match, but deny rules and ports still apply
     rule = first_rule(policy, p.host, addrs, env, app_env)
     if _check_addrs(addrs, _internal(rule, app_env, addrs) is not False)[0] == "fail":

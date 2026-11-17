@@ -16,7 +16,7 @@ from app.engine.zap import EngineDown, EngineError, Zap, alert_to_draft
 from app.worker import main as wm
 from app.worker.modules.base import ModuleResult
 from test_scheduler import add_job, claim, make_assessment, sched, workers  # noqa: F401
-from test_worker import public, run, snapshot
+from test_worker import public, run, setup, snapshot  # noqa: F401
 
 JOB, ASSESSMENT = SimpleNamespace(display_id="JOB-1"), SimpleNamespace(exclusions="/admin/*, /billing")
 SCOPE = {"hosts": {"app.example.com"}, "ports": {443}, "internal": {}}
@@ -182,3 +182,30 @@ def test_zap_4xx_is_engine_error_not_down_and_missing_field_is_clear():
 def test_user_confirmed_counts_as_confirmed():
     ctx = SimpleNamespace(host="h", port=443, url="https://h/")
     assert alert_to_draft({"pluginId": "1", "risk": "Low", "confidence": "User Confirmed", "url": "https://h/x"}, ctx).confidence == "confirmed"
+
+
+def test_wait_stops_the_scan_when_should_stop_turns_true():
+    f = Fake({"/JSON/ascan/view/status/": (200, {"status": "30"})})
+    z, polls = Zap(f.url, "k", poll=0.01), []
+    z.should_stop = lambda: polls.append(1) or len(polls) >= 2
+    t = time.monotonic()
+    assert z._wait("ascan", "7", t + 60) == 30
+    assert time.monotonic() - t < 5 and ("POST", "/JSON/ascan/action/stop/") in f.paths()
+    f.shutdown()
+
+
+def test_stop_check_is_throttled_and_sees_cancel(setup):
+    w, aid, uid, _ = setup
+    jid = add_job(aid, uid)
+    claim(w)
+    clock = [100.0]
+    stop = wm._stop_check(jid, w, threading.Event(), clock=lambda: clock[0])
+    assert stop() is False
+    with engine.begin() as c:
+        c.execute(text("UPDATE jobs SET state='cancelling', cancel_requested=true WHERE id=:i"), {"i": jid})
+    assert stop() is False  # within the throttle window: no new query
+    clock[0] += 6
+    assert stop() is True
+    halted = threading.Event()
+    halted.set()
+    assert wm._stop_check(jid, w, halted)() is True
